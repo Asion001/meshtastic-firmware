@@ -122,6 +122,57 @@ constexpr const char *FLASH_DIRTY_MARKER = "/prefs/.sd-fallback-dirty";
 bool sdCardMounted = false;
 bool sdSyncInProgress = false;
 
+bool mountCardputerSDLocked(bool logCardDetails)
+{
+    if (sdCardMounted)
+        return true;
+
+    // The radio and SD card share this bus. Keep both devices deselected
+    // while the SD driver initializes the bus, then select only the card.
+    pinMode(LORA_CS, OUTPUT);
+    digitalWrite(LORA_CS, HIGH);
+    pinMode(SDCARD_CS, OUTPUT);
+    digitalWrite(SDCARD_CS, HIGH);
+    SDHandler.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
+
+    if (!SD.begin(SDCARD_CS, SDHandler, SD_SPI_FREQUENCY)) {
+        SD.end();
+        LOG_DEBUG("No SD card detected");
+        return false;
+    }
+
+    uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
+        SD.end();
+        LOG_DEBUG("No SD card attached");
+        return false;
+    }
+
+    sdCardMounted = true;
+    if (logCardDetails) {
+        const char *type =
+            cardType == CARD_MMC ? "MMC" : cardType == CARD_SD ? "SDSC" : cardType == CARD_SDHC ? "SDHC" : "UNKNOWN";
+        LOG_DEBUG("SD Card Type: %s", type);
+        LOG_DEBUG("SD Card Size: %lu MB", static_cast<uint32_t>(SD.cardSize() / (1024 * 1024)));
+        LOG_DEBUG("Total space: %lu MB", static_cast<uint32_t>(SD.totalBytes() / (1024 * 1024)));
+        LOG_DEBUG("Used space: %lu MB", static_cast<uint32_t>(SD.usedBytes() / (1024 * 1024)));
+    }
+    return true;
+}
+
+void unmountCardputerSDLocked()
+{
+    if (!sdCardMounted)
+        return;
+
+    // All File objects must be closed by the caller before this point.
+    // SD.end() releases FAT/VFS/card allocations. Do not call SPI.end():
+    // the SX1262 radio continues to use the shared SPI bus.
+    SD.end();
+    sdCardMounted = false;
+    digitalWrite(SDCARD_CS, HIGH);
+}
+
 bool isConfigurationPath(const char *path)
 {
     return path && (strncmp(path, "/prefs/", 7) == 0 || strncmp(path, "/backups/", 9) == 0);
@@ -583,10 +634,15 @@ void rmDir(const char *dirname)
 #ifdef FSCom
     listDir(dirname, 10, true);
 #if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
-    if (sdCardMounted && !sdSyncInProgress &&
-        (strcmp(dirname, "/prefs") == 0 || strcmp(dirname, "/backups") == 0)) {
-        String sdPath = sdPathFor(dirname);
-        removeTree(SD, sdPath.c_str());
+    if (!sdSyncInProgress && (strcmp(dirname, "/prefs") == 0 || strcmp(dirname, "/backups") == 0)) {
+        if (sdCardMounted) {
+            String sdPath = sdPathFor(dirname);
+            removeTree(SD, sdPath.c_str());
+        } else {
+            // The next boot-time sync will replace the durable SD copy with
+            // the reset flash tree.
+            markFlashFallbackDirty();
+        }
     }
 #endif
 #endif
@@ -623,32 +679,21 @@ void setupSDCard()
 #if defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
     concurrency::LockGuard g(spiLock);
 #ifdef M5STACK_CARDPUTER_ADV
-    // The radio and SD card share this bus. Keep the radio deselected while
-    // the SD driver probes and mounts the card.
-    pinMode(LORA_CS, OUTPUT);
-    digitalWrite(LORA_CS, HIGH);
-#endif
+    if (!mountCardputerSDLocked(true))
+        return;
+#else
     pinMode(SDCARD_CS, OUTPUT);
     digitalWrite(SDCARD_CS, HIGH);
     SDHandler.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
     if (!SD.begin(SDCARD_CS, SDHandler, SD_SPI_FREQUENCY)) {
         LOG_DEBUG("No SD_MMC card detected");
-#ifdef M5STACK_CARDPUTER_ADV
-        sdCardMounted = false;
-#endif
         return;
     }
     uint8_t cardType = SD.cardType();
     if (cardType == CARD_NONE) {
         LOG_DEBUG("No SD_MMC card attached");
-#ifdef M5STACK_CARDPUTER_ADV
-        sdCardMounted = false;
-#endif
         return;
     }
-#ifdef M5STACK_CARDPUTER_ADV
-    sdCardMounted = true;
-#endif
     LOG_DEBUG("SD_MMC Card Type: ");
     if (cardType == CARD_MMC) {
         LOG_DEBUG("MMC");
@@ -665,13 +710,14 @@ void setupSDCard()
     LOG_DEBUG("Total space: %lu MB", (uint32_t)(SD.totalBytes() / (1024 * 1024)));
     LOG_DEBUG("Used space: %lu MB", (uint32_t)(SD.usedBytes() / (1024 * 1024)));
 #endif
+#endif
 }
 
 bool restoreConfigurationFromSD()
 {
 #if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
     concurrency::LockGuard g(spiLock);
-    if (!sdCardMounted) {
+    if (!mountCardputerSDLocked(false)) {
         markFlashFallbackDirty();
         LOG_WARN("Cardputer SD config unavailable; using internal flash until the card returns");
         return false;
@@ -694,6 +740,7 @@ bool restoreConfigurationFromSD()
             LOG_INFO("Restored Meshtastic configuration from SD");
     }
     sdSyncInProgress = false;
+    unmountCardputerSDLocked();
 
     if (!okay) {
         markFlashFallbackDirty();
@@ -712,7 +759,7 @@ bool mirrorConfigurationFileToSD(const char *path)
         return true;
 
     concurrency::LockGuard g(spiLock);
-    if (!sdCardMounted) {
+    if (!mountCardputerSDLocked(false)) {
         markFlashFallbackDirty();
         return false;
     }
@@ -720,6 +767,7 @@ bool mirrorConfigurationFileToSD(const char *path)
     String destinationPath = sdPathFor(path);
     bool okay = FSCom.exists(path) ? copyFile(FSCom, path, SD, destinationPath.c_str())
                                    : (!SD.exists(destinationPath.c_str()) || SD.remove(destinationPath.c_str()));
+    unmountCardputerSDLocked();
     if (!okay) {
         markFlashFallbackDirty();
         LOG_ERROR("Failed to mirror %s to SD", path);
