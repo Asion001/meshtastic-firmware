@@ -25,6 +25,12 @@ The `.storage-v1` file identifies an initialized card. Do not edit files while t
 
 When the Cardputer first learns a node's identity, it displays a five-second `New node detected` banner. The alert is enabled by default and can be changed under **System → Notifications → New Node Alerts**. This preference is stored in `/prefs/cardputer_adv_ui.bin` and is therefore mirrored to SD with the other settings.
 
+## Offline map tab
+
+The Cardputer ADV build includes an offline map frame immediately after the GPS frame. It uses the tile format from [lunarc3/CardputerGPSMap](https://github.com/lunarc3/CardputerGPSMap) and reads JPEG tiles from `/gpsmap/{zoom}/{x}/{y}.jpg` on the SD card. Generate the tile tree with that project's map converter, then copy the resulting `gpsmap` directory to the card.
+
+Use the arrow keys to pan, `Z`/`X` to zoom out/in, and the backtick key to return to the current Meshtastic GPS position. Because the arrow keys control the map while that frame is active, use `Tab` to advance to the next Meshtastic frame. The last position and zoom are saved to `/gpsmap/gpsmap.ini`. Map tiles are rendered with ordered monochrome dithering to fit Meshtastic's memory-efficient Cardputer display pipeline.
+
 ## Security
 
 The SD copy includes sensitive Meshtastic state, including channel PSKs and the device private key. A normal FAT-formatted microSD card does not protect these files at rest. Keep the card physically secure and erase it before reuse or disposal.

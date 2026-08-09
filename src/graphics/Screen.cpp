@@ -48,6 +48,9 @@ extern NicheGraphics::BaseUIEInkDisplay *setupNicheGraphicsBaseUI();
 #include "draw/MessageRenderer.h"
 #include "draw/NodeListRenderer.h"
 #include "draw/NotificationRenderer.h"
+#if defined(M5STACK_CARDPUTER_ADV)
+#include "draw/OfflineMapRenderer.h"
+#endif
 #include "draw/UIRenderer.h"
 #include "graphics/TFTColorRegions.h"
 #include "modules/CannedMessageModule.h"
@@ -1484,6 +1487,12 @@ void Screen::setFrames(FrameFocus focus)
         indicatorIcons.push_back(icon_compass);
         PUSH_FRAME_TITLE("GPS");
     }
+#if defined(M5STACK_CARDPUTER_ADV)
+    fsi.positions.map = numframes;
+    normalFrames[numframes++] = graphics::OfflineMapRenderer::drawFrame;
+    indicatorIcons.push_back(icon_compass);
+    PUSH_FRAME_TITLE("Map");
+#endif
 #endif
     if (RadioLibInterface::instance && !hiddenFrames.lora) {
         fsi.positions.lora = numframes;
@@ -1980,6 +1989,10 @@ void Screen::logFrameChange(const char *reason, uint8_t targetIdx)
         name = "system";
     else if (targetIdx == p.gps)
         name = "gps";
+#if defined(M5STACK_CARDPUTER_ADV)
+    else if (targetIdx == p.map)
+        name = "map";
+#endif
     else if (targetIdx == p.lora)
         name = "lora";
     else if (targetIdx == p.clock)
@@ -2150,6 +2163,18 @@ int Screen::handleInputEvent(const InputEvent *event)
         menuHandler::handleMenuSwitch(dispdev);
         return 0;
     }
+#if defined(M5STACK_CARDPUTER_ADV)
+    if (ui->getUiState()->currentFrame == framesetInfo.positions.map) {
+        if (event->kbchar == INPUT_BROKER_MSG_TAB) {
+            showFrame(FrameDirection::NEXT);
+            return 0;
+        }
+        if (graphics::OfflineMapRenderer::handleInput(*event)) {
+            setFastFramerate();
+            return 0;
+        }
+    }
+#endif
     // UP/DOWN in message screen scrolls through message threads
     if (ui->getUiState()->currentFrame == framesetInfo.positions.textMessage) {
 
