@@ -11,6 +11,7 @@
 #include "FSCommon.h"
 #include "SPILock.h"
 #include "configuration.h"
+#include <cstring>
 
 #if defined(ARCH_PORTDUINO)
 #include <filesystem>
@@ -109,6 +110,210 @@ SPIClass SPI_HSPI(HSPI);
 
 #endif // HAS_SDCARD
 
+#if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
+namespace
+{
+constexpr const char *SD_STORAGE_ROOT = "/meshtastic";
+constexpr const char *SD_PREFS_ROOT = "/meshtastic/prefs";
+constexpr const char *SD_BACKUPS_ROOT = "/meshtastic/backups";
+constexpr const char *SD_STORAGE_MARKER = "/meshtastic/.storage-v1";
+constexpr const char *FLASH_DIRTY_MARKER = "/prefs/.sd-fallback-dirty";
+
+bool sdCardMounted = false;
+bool sdSyncInProgress = false;
+
+bool isConfigurationPath(const char *path)
+{
+    return path && (strncmp(path, "/prefs/", 7) == 0 || strncmp(path, "/backups/", 9) == 0);
+}
+
+String sdPathFor(const char *path)
+{
+    return String(SD_STORAGE_ROOT) + path;
+}
+
+void ensureParentDirectories(fs::FS &filesystem, const char *path)
+{
+    String parent(path);
+    for (size_t i = 1; i < parent.length(); ++i) {
+        if (parent[i] != '/')
+            continue;
+        char saved = parent[i];
+        parent[i] = '\0';
+        filesystem.mkdir(parent.c_str());
+        parent[i] = saved;
+    }
+}
+
+bool removeTree(fs::FS &filesystem, const char *path)
+{
+    File root = filesystem.open(path, FILE_O_READ);
+    if (!root)
+        return true;
+    if (!root.isDirectory()) {
+        root.close();
+        return filesystem.remove(path);
+    }
+
+    File entry = root.openNextFile();
+    while (entry) {
+        String entryPath = entry.path();
+        bool isDirectory = entry.isDirectory();
+        entry.close();
+        bool removed = isDirectory ? removeTree(filesystem, entryPath.c_str()) : filesystem.remove(entryPath.c_str());
+        if (!removed) {
+            root.close();
+            return false;
+        }
+        entry = root.openNextFile();
+    }
+    root.close();
+    return filesystem.rmdir(path);
+}
+
+bool copyFile(fs::FS &source, const char *sourcePath, fs::FS &destination, const char *destinationPath)
+{
+    File input = source.open(sourcePath, FILE_O_READ);
+    if (!input || input.isDirectory()) {
+        input.close();
+        return false;
+    }
+
+    ensureParentDirectories(destination, destinationPath);
+    String temporaryPath = String(destinationPath) + ".tmp";
+    destination.remove(temporaryPath.c_str());
+    File output = destination.open(temporaryPath.c_str(), FILE_O_WRITE);
+    if (!output) {
+        input.close();
+        return false;
+    }
+
+    size_t expected = input.size();
+    size_t copied = 0;
+    uint8_t buffer[512];
+    while (input.available()) {
+        size_t count = input.read(buffer, sizeof(buffer));
+        if (count == 0)
+            break;
+        size_t written = output.write(buffer, count);
+        copied += written;
+        if (written != count)
+            break;
+    }
+    output.flush();
+    output.close();
+    input.close();
+
+    if (copied != expected) {
+        destination.remove(temporaryPath.c_str());
+        return false;
+    }
+    destination.remove(destinationPath);
+    if (!destination.rename(temporaryPath.c_str(), destinationPath)) {
+        destination.remove(temporaryPath.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool copyTree(fs::FS &source, const char *sourceRoot, fs::FS &destination, const char *destinationRoot)
+{
+    File root = source.open(sourceRoot, FILE_O_READ);
+    if (!root)
+        return true;
+    if (!root.isDirectory()) {
+        root.close();
+        return false;
+    }
+
+    destination.mkdir(destinationRoot);
+    File entry = root.openNextFile();
+    while (entry) {
+        String sourcePath = entry.path();
+        bool isDirectory = entry.isDirectory();
+        entry.close();
+
+        if (sourcePath == FLASH_DIRTY_MARKER) {
+            entry = root.openNextFile();
+            continue;
+        }
+
+        String relativePath = sourcePath.substring(strlen(sourceRoot));
+        String destinationPath = String(destinationRoot) + relativePath;
+        bool copied = isDirectory ? copyTree(source, sourcePath.c_str(), destination, destinationPath.c_str())
+                                  : copyFile(source, sourcePath.c_str(), destination, destinationPath.c_str());
+        if (!copied) {
+            root.close();
+            return false;
+        }
+        entry = root.openNextFile();
+    }
+    root.close();
+    return true;
+}
+
+bool replaceFlashTreeFromSD(const char *sdRoot, const char *flashRoot)
+{
+    String temporaryRoot = String(flashRoot) + ".sdtmp";
+    String previousRoot = String(flashRoot) + ".sdold";
+    removeTree(FSCom, temporaryRoot.c_str());
+    removeTree(FSCom, previousRoot.c_str());
+    FSCom.mkdir(temporaryRoot.c_str());
+    if (!copyTree(SD, sdRoot, FSCom, temporaryRoot.c_str())) {
+        removeTree(FSCom, temporaryRoot.c_str());
+        return false;
+    }
+
+    bool hadPrevious = FSCom.exists(flashRoot);
+    if (hadPrevious && !FSCom.rename(flashRoot, previousRoot.c_str())) {
+        removeTree(FSCom, temporaryRoot.c_str());
+        return false;
+    }
+    if (!FSCom.rename(temporaryRoot.c_str(), flashRoot)) {
+        if (hadPrevious)
+            FSCom.rename(previousRoot.c_str(), flashRoot);
+        removeTree(FSCom, temporaryRoot.c_str());
+        return false;
+    }
+    removeTree(FSCom, previousRoot.c_str());
+    return true;
+}
+
+void markFlashFallbackDirty()
+{
+    if (FSCom.exists(FLASH_DIRTY_MARKER))
+        return;
+    FSCom.mkdir("/prefs");
+    File marker = FSCom.open(FLASH_DIRTY_MARKER, FILE_O_WRITE);
+    if (marker) {
+        marker.write((uint8_t)1);
+        marker.close();
+    }
+}
+
+bool seedSDFromFlash()
+{
+    // The marker is the commit record. If power is lost during the copy, the
+    // next boot will retry from flash rather than restoring a partial tree.
+    SD.remove(SD_STORAGE_MARKER);
+    removeTree(SD, SD_PREFS_ROOT);
+    removeTree(SD, SD_BACKUPS_ROOT);
+    SD.mkdir(SD_STORAGE_ROOT);
+    bool okay = copyTree(FSCom, "/prefs", SD, SD_PREFS_ROOT) && copyTree(FSCom, "/backups", SD, SD_BACKUPS_ROOT);
+    if (!okay)
+        return false;
+
+    File marker = SD.open(SD_STORAGE_MARKER, FILE_O_WRITE);
+    bool markerCreated = (bool)marker;
+    if (markerCreated) {
+        marker.write((uint8_t)1);
+        marker.close();
+    }
+    return markerCreated;
+}
+} // namespace
+#endif
+
 /**
  * Renames a file from pathFrom to pathTo.
  *
@@ -123,13 +328,16 @@ bool renameFile(const char *pathFrom, const char *pathTo)
     spiLock->lock();
     bool result = FSCom.rename(pathFrom, pathTo);
     spiLock->unlock();
+#if defined(M5STACK_CARDPUTER_ADV)
+    if (result)
+        mirrorConfigurationFileToSD(pathTo);
+#endif
     return result;
 #else
     return false;
 #endif
 }
 
-#include <cstring>
 #include <new>
 #include <stdexcept>
 #include <vector>
@@ -374,6 +582,13 @@ void rmDir(const char *dirname)
 {
 #ifdef FSCom
     listDir(dirname, 10, true);
+#if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
+    if (sdCardMounted && !sdSyncInProgress &&
+        (strcmp(dirname, "/prefs") == 0 || strcmp(dirname, "/backups") == 0)) {
+        String sdPath = sdPathFor(dirname);
+        removeTree(SD, sdPath.c_str());
+    }
+#endif
 #endif
 }
 
@@ -407,16 +622,33 @@ void setupSDCard()
 {
 #if defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
     concurrency::LockGuard g(spiLock);
+#ifdef M5STACK_CARDPUTER_ADV
+    // The radio and SD card share this bus. Keep the radio deselected while
+    // the SD driver probes and mounts the card.
+    pinMode(LORA_CS, OUTPUT);
+    digitalWrite(LORA_CS, HIGH);
+#endif
+    pinMode(SDCARD_CS, OUTPUT);
+    digitalWrite(SDCARD_CS, HIGH);
     SDHandler.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
     if (!SD.begin(SDCARD_CS, SDHandler, SD_SPI_FREQUENCY)) {
         LOG_DEBUG("No SD_MMC card detected");
+#ifdef M5STACK_CARDPUTER_ADV
+        sdCardMounted = false;
+#endif
         return;
     }
     uint8_t cardType = SD.cardType();
     if (cardType == CARD_NONE) {
         LOG_DEBUG("No SD_MMC card attached");
+#ifdef M5STACK_CARDPUTER_ADV
+        sdCardMounted = false;
+#endif
         return;
     }
+#ifdef M5STACK_CARDPUTER_ADV
+    sdCardMounted = true;
+#endif
     LOG_DEBUG("SD_MMC Card Type: ");
     if (cardType == CARD_MMC) {
         LOG_DEBUG("MMC");
@@ -432,5 +664,79 @@ void setupSDCard()
     LOG_DEBUG("SD Card Size: %lu MB", (uint32_t)cardSize);
     LOG_DEBUG("Total space: %lu MB", (uint32_t)(SD.totalBytes() / (1024 * 1024)));
     LOG_DEBUG("Used space: %lu MB", (uint32_t)(SD.usedBytes() / (1024 * 1024)));
+#endif
+}
+
+bool restoreConfigurationFromSD()
+{
+#if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
+    concurrency::LockGuard g(spiLock);
+    if (!sdCardMounted) {
+        markFlashFallbackDirty();
+        LOG_WARN("Cardputer SD config unavailable; using internal flash until the card returns");
+        return false;
+    }
+
+    sdSyncInProgress = true;
+    bool flashIsNewer = FSCom.exists(FLASH_DIRTY_MARKER);
+    bool sdHasConfiguration = SD.exists(SD_STORAGE_MARKER);
+    bool okay = false;
+    if (flashIsNewer || !sdHasConfiguration) {
+        okay = seedSDFromFlash();
+        if (okay) {
+            FSCom.remove(FLASH_DIRTY_MARKER);
+            LOG_INFO("Seeded /meshtastic configuration on SD from internal flash");
+        }
+    } else {
+        okay = replaceFlashTreeFromSD(SD_PREFS_ROOT, "/prefs") &&
+               replaceFlashTreeFromSD(SD_BACKUPS_ROOT, "/backups");
+        if (okay)
+            LOG_INFO("Restored Meshtastic configuration from SD");
+    }
+    sdSyncInProgress = false;
+
+    if (!okay) {
+        markFlashFallbackDirty();
+        LOG_ERROR("Cardputer SD configuration sync failed; internal flash remains authoritative");
+    }
+    return okay;
+#else
+    return false;
+#endif
+}
+
+bool mirrorConfigurationFileToSD(const char *path)
+{
+#if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
+    if (!isConfigurationPath(path) || strcmp(path, FLASH_DIRTY_MARKER) == 0 || sdSyncInProgress)
+        return true;
+
+    concurrency::LockGuard g(spiLock);
+    if (!sdCardMounted) {
+        markFlashFallbackDirty();
+        return false;
+    }
+
+    String destinationPath = sdPathFor(path);
+    bool okay = FSCom.exists(path) ? copyFile(FSCom, path, SD, destinationPath.c_str())
+                                   : (!SD.exists(destinationPath.c_str()) || SD.remove(destinationPath.c_str()));
+    if (!okay) {
+        markFlashFallbackDirty();
+        LOG_ERROR("Failed to mirror %s to SD", path);
+    }
+    return okay;
+#else
+    (void)path;
+    return false;
+#endif
+}
+
+void markConfigurationFileDirtyForSD(const char *path)
+{
+#if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
+    if (isConfigurationPath(path) && strcmp(path, FLASH_DIRTY_MARKER) != 0)
+        markFlashFallbackDirty();
+#else
+    (void)path;
 #endif
 }

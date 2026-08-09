@@ -540,6 +540,11 @@ void setup()
 
     fsInit();
 
+#if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD)
+    setupSDCard();
+    restoreConfigurationFromSD();
+#endif
+
 #ifdef MESHTASTIC_ENCRYPTED_STORAGE
     EncryptedStorage::initLocked();
     if (!EncryptedStorage::isUnlocked()) {
@@ -820,7 +825,7 @@ void setup()
     scannerToSensorsMap(i2cScanner, ScanI2C::DeviceType::MAX30102, meshtastic_TelemetrySensorType_MAX30102);
 #endif
 
-#ifdef HAS_SDCARD
+#if defined(HAS_SDCARD) && !defined(M5STACK_CARDPUTER_ADV)
     setupSDCard();
 #endif
 

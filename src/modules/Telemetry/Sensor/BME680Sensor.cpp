@@ -186,6 +186,8 @@ void BME680Sensor::updateState()
         }
     }
     spiLock->unlock();
+    if (update)
+        mirrorConfigurationFileToSD(bsecConfigFileName);
 #else
     LOG_ERROR("ERROR: Filesystem not implemented");
 #endif

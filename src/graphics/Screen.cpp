@@ -1894,6 +1894,7 @@ void Screen::saveFrameVisibility()
         LOG_WARN("Failed to open %s for writing", frameVisibilityFileName);
     }
     spiLock->unlock();
+    mirrorConfigurationFileToSD(frameVisibilityFileName);
 #endif
 }
 

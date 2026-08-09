@@ -231,6 +231,7 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
         spiLock->lock();
         file.flush();
         file.close();
+        markConfigurationFileDirtyForSD(filename);
         spiLock->unlock();
         isReceiving = false;
         break;
@@ -242,6 +243,7 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
         file.close();
 
         FSCom.remove(filename);
+        markConfigurationFileDirtyForSD(filename);
         spiLock->unlock();
         isReceiving = false;
         break;

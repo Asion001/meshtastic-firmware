@@ -25,6 +25,10 @@
 
 This repository contains the official device firmware for Meshtastic, an open-source LoRa mesh networking project designed for long-range, low-power communication without relying on internet or cellular infrastructure. The firmware supports various hardware platforms, including ESP32, nRF52, RP2040/RP2350, and Linux-based devices.
 
+> [!NOTE]
+> This fork adds SD-backed configuration storage for the M5Stack Cardputer ADV. See
+> [Cardputer ADV SD configuration storage](docs/cardputer-adv-sd-storage.md) for behavior, building, and recovery details.
+
 Meshtastic enables text messaging, location sharing, and telemetry over a decentralized mesh network, making it ideal for outdoor adventures, emergency preparedness, and remote operations.
 
 ### Get Started

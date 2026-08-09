@@ -70,6 +70,14 @@ void listDir(const char *dirname, uint8_t levels, bool del = false);
 void rmDir(const char *dirname);
 void setupSDCard();
 
+// Cardputer ADV uses the SD card as the durable copy of runtime preferences.
+// Internal flash remains available while the card is absent.
+bool restoreConfigurationFromSD();
+bool mirrorConfigurationFileToSD(const char *path);
+// Record a direct preference mutation that cannot be mirrored immediately.
+// The caller must already hold spiLock when it invokes this helper.
+void markConfigurationFileDirtyForSD(const char *path);
+
 #if defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && defined(SDCARD_USE_SPI1)
 #include <SPI.h>
 // HSPI bus set up by setupSDCard(). Reuse this for other devices on the same bus.

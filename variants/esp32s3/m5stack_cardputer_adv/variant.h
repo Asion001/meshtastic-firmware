@@ -87,5 +87,13 @@
 #define ADC_CHANNEL ADC_CHANNEL_9
 #define ADC_MULTIPLIER 2 * 1.02 // 100k + 100k, and add 2% to kick the voltage over the max voltage to show charging.
 
+// microSD shares the LoRa SPI bus and has its own chip select.
+#define HAS_SDCARD
+#define SDCARD_CS 12
+#define SD_SPI_FREQUENCY 4000000U
+#define SPI_SCK LORA_SCK
+#define SPI_MISO LORA_MISO
+#define SPI_MOSI LORA_MOSI
+
 // BMI270 6-axis IMU on internal I2C bus
 #define HAS_BMI270

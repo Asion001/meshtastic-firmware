@@ -655,6 +655,7 @@ void GPS::clearProbeCache()
     spiLock->lock();
     if (FSCom.exists(GPS_PROBE_CACHE_FILE)) {
         FSCom.remove(GPS_PROBE_CACHE_FILE);
+        markConfigurationFileDirtyForSD(GPS_PROBE_CACHE_FILE);
     }
     spiLock->unlock();
 #endif

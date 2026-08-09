@@ -826,6 +826,7 @@ static bool readAndConsumeToken()
             f.close();
             LOG_WARN("EncryptedStorage: Token file wrong size (%d), deleting", fileSize);
             FSCom.remove(TOKEN_FILENAME);
+            markConfigurationFileDirtyForSD(TOKEN_FILENAME);
             lockReason = "token_wrong_size";
             return false;
         }
@@ -836,6 +837,7 @@ static bool readAndConsumeToken()
         if (bytesRead != TOKEN_TOTAL_SIZE) {
             LOG_ERROR("EncryptedStorage: Token short read");
             FSCom.remove(TOKEN_FILENAME);
+            markConfigurationFileDirtyForSD(TOKEN_FILENAME);
             return false;
         }
     }
@@ -847,6 +849,7 @@ static bool readAndConsumeToken()
         LOG_ERROR("EncryptedStorage: Token bad magic, deleting");
         concurrency::LockGuard g(spiLock);
         FSCom.remove(TOKEN_FILENAME);
+        markConfigurationFileDirtyForSD(TOKEN_FILENAME);
         lockReason = "token_bad_magic";
         return false;
     }
@@ -861,6 +864,7 @@ static bool readAndConsumeToken()
         LOG_ERROR("EncryptedStorage: Token HMAC failed - tampered or wrong device, deleting");
         concurrency::LockGuard g(spiLock);
         FSCom.remove(TOKEN_FILENAME);
+        markConfigurationFileDirtyForSD(TOKEN_FILENAME);
         lockReason = "token_hmac_fail";
         return false;
     }
@@ -897,6 +901,7 @@ static bool readAndConsumeToken()
                   (unsigned)maxSeenCounter);
         concurrency::LockGuard g(spiLock);
         FSCom.remove(TOKEN_FILENAME);
+        markConfigurationFileDirtyForSD(TOKEN_FILENAME);
         lockReason = "token_rollback";
         return false;
     }
@@ -910,6 +915,7 @@ static bool readAndConsumeToken()
         LOG_WARN("EncryptedStorage: Token boot count exhausted, deleting");
         concurrency::LockGuard g(spiLock);
         FSCom.remove(TOKEN_FILENAME);
+        markConfigurationFileDirtyForSD(TOKEN_FILENAME);
         lockReason = "token_boots_zero";
         return false;
     }
@@ -937,6 +943,7 @@ static bool readAndConsumeToken()
             LOG_WARN("EncryptedStorage: Token expired (now=%u, until=%u), deleting", now, validUntilEpoch);
             concurrency::LockGuard g(spiLock);
             FSCom.remove(TOKEN_FILENAME);
+            markConfigurationFileDirtyForSD(TOKEN_FILENAME);
             lockReason = "token_expired";
             return false;
         }
@@ -952,6 +959,7 @@ static bool readAndConsumeToken()
         meshtastic_security::secure_zero(dek, sizeof(dek));
         concurrency::LockGuard g(spiLock);
         FSCom.remove(TOKEN_FILENAME);
+        markConfigurationFileDirtyForSD(TOKEN_FILENAME);
         lockReason = "token_dek_fail";
         return false;
     }
@@ -962,6 +970,7 @@ static bool readAndConsumeToken()
         LOG_INFO("EncryptedStorage: Token last boot consumed, deleting");
         concurrency::LockGuard g(spiLock);
         FSCom.remove(TOKEN_FILENAME);
+        markConfigurationFileDirtyForSD(TOKEN_FILENAME);
     } else {
         writeUnlockToken(newBoots, validUntilEpoch, sessionMaxSeconds);
     }
@@ -1092,6 +1101,7 @@ uint8_t consumeSessionBoot()
         // s_bootsRemaining == 0 and exhaust into a hard lock + reboot.
         concurrency::LockGuard g(spiLock);
         FSCom.remove(TOKEN_FILENAME);
+        markConfigurationFileDirtyForSD(TOKEN_FILENAME);
     } else {
         // Rewrite the token with the new count. Carries the existing
         // validUntilEpoch and the in-RAM sessionMaxSeconds forward so
@@ -1313,6 +1323,7 @@ void lockNow()
     {
         concurrency::LockGuard g(spiLock);
         FSCom.remove(TOKEN_FILENAME);
+        markConfigurationFileDirtyForSD(TOKEN_FILENAME);
     }
 #endif
     secureWipeKeys();
@@ -1792,6 +1803,7 @@ void removeLockdownArtifacts()
         FSCom.remove(TOKEN_FILENAME);
         FSCom.remove(MONO_FILENAME);
         FSCom.remove(BACKOFF_FILENAME);
+        markConfigurationFileDirtyForSD(DEK_FILENAME);
     }
 #endif
     secureWipeKeys();

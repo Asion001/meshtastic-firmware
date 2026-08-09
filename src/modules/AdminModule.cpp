@@ -638,6 +638,7 @@ bool AdminModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshta
 #ifdef FSCom
         spiLock->lock();
         if (FSCom.remove(r->delete_file_request)) {
+            markConfigurationFileDirtyForSD(r->delete_file_request);
             LOG_DEBUG("Successfully deleted file");
         } else {
             LOG_DEBUG("Failed to delete file");
@@ -673,7 +674,8 @@ bool AdminModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshta
 #ifdef FSCom
         if (r->remove_backup_preferences == meshtastic_AdminMessage_BackupLocation_FLASH) {
             spiLock->lock();
-            FSCom.remove(backupFileName);
+            if (FSCom.remove(backupFileName))
+                markConfigurationFileDirtyForSD(backupFileName);
             spiLock->unlock();
         } else if (r->remove_backup_preferences == meshtastic_AdminMessage_BackupLocation_SD) {
             // TODO: After more mainline SD card support

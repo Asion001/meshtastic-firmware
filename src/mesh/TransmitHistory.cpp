@@ -246,6 +246,7 @@ bool TransmitHistory::saveToDisk()
         LOG_DEBUG("TransmitHistory: saved %u entries to disk", written);
         dirty = false;
         spiLock->unlock();
+        mirrorConfigurationFileToSD(FILENAME);
         return true;
     } else {
         LOG_WARN("TransmitHistory: failed to open file for writing");
@@ -265,6 +266,7 @@ void TransmitHistory::clear()
     spiLock->lock();
     if (FSCom.exists(FILENAME)) {
         FSCom.remove(FILENAME);
+        markConfigurationFileDirtyForSD(FILENAME);
     }
     spiLock->unlock();
     LOG_INFO("TransmitHistory: cleared in-memory state + on-disk file");
