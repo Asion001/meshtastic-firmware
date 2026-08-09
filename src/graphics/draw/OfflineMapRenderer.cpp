@@ -10,6 +10,7 @@
 
 #if defined(M5STACK_CARDPUTER_ADV) && HAS_SCREEN
 
+#include "FSCommon.h"
 #include "GPSStatus.h"
 #include "SPILock.h"
 #include "graphics/ScreenFonts.h"
@@ -55,6 +56,25 @@ bool foundTile = false;
 uint32_t lastSaveMillis = 0;
 
 constexpr uint8_t BAYER_4X4[16] = {8, 136, 40, 168, 200, 72, 232, 104, 56, 184, 24, 152, 248, 120, 216, 88};
+
+class CardputerSDSession
+{
+  public:
+    CardputerSDSession() : mounted(mountCardputerSDLocked()) {}
+    ~CardputerSDSession()
+    {
+        if (mounted)
+            unmountCardputerSDLocked();
+    }
+
+    explicit operator bool() const { return mounted; }
+
+    CardputerSDSession(const CardputerSDSession &) = delete;
+    CardputerSDSession &operator=(const CardputerSDSession &) = delete;
+
+  private:
+    bool mounted;
+};
 
 static inline double degreesToRadians(double degrees)
 {
@@ -132,6 +152,9 @@ bool drawTile(int tileX, int tileY, int tileZoom, int screenX, int screenY)
         // Only hold the shared radio/SD bus while reading. JPEG decoding can
         // then run without delaying LoRa traffic.
         concurrency::LockGuard guard(spiLock);
+        CardputerSDSession session;
+        if (!session)
+            return false;
         File file = SD.open(path, FILE_READ);
         if (!file)
             return false;
@@ -164,6 +187,9 @@ bool drawTile(int tileX, int tileY, int tileZoom, int screenX, int screenY)
 bool loadState()
 {
     concurrency::LockGuard guard(spiLock);
+    CardputerSDSession session;
+    if (!session)
+        return false;
     File file = SD.open(STATE_FILE, FILE_READ);
     if (!file)
         return false;
@@ -192,6 +218,9 @@ void saveState()
 
     lastSaveMillis = millis();
     concurrency::LockGuard guard(spiLock);
+    CardputerSDSession session;
+    if (!session)
+        return;
     SD.mkdir(MAP_ROOT);
     SD.remove(STATE_TEMP_FILE);
     File file = SD.open(STATE_TEMP_FILE, FILE_WRITE);
