@@ -12,6 +12,10 @@
 #include <AudioOutputI2S.h>
 #include <ESP8266SAM.h>
 
+#if defined(M5STACK_CARDPUTER_ADV) && defined(ARCH_ESP32)
+#include "CardputerAdvAudioOutputI2S.h"
+#endif
+
 // A board with an I2S amplifier opts in by defining AUDIO_AMP_ENABLE(on) in its variant.h to power the
 // amp on/off around playback (e.g. an enable pin on an I/O expander). The includes below expose the
 // expander instances (io / mcpIoExpander) those macros typically reference.
@@ -33,13 +37,23 @@ class AudioThread : public concurrency::OSThread
 
     void beginRttl(const void *data, uint32_t len)
     {
+        if (!audioOut)
+            return;
 #ifdef AUDIO_AMP_ENABLE
         AUDIO_AMP_ENABLE(true);
 #endif
         setCPUFast(true);
         rtttlFile = std::unique_ptr<AudioFileSourcePROGMEM>(new AudioFileSourcePROGMEM(data, len));
         i2sRtttl = std::unique_ptr<AudioGeneratorRTTTL>(new AudioGeneratorRTTTL());
-        i2sRtttl->begin(rtttlFile.get(), audioOut.get());
+        if (!i2sRtttl->begin(rtttlFile.get(), audioOut.get())) {
+            LOG_ERROR("Unable to start I2S alert audio");
+            i2sRtttl = nullptr;
+            rtttlFile = nullptr;
+            setCPUFast(false);
+#ifdef AUDIO_AMP_ENABLE
+            AUDIO_AMP_ENABLE(false);
+#endif
+        }
     }
 
     // Also handles actually playing the RTTTL, needs to be called in loop
@@ -98,7 +112,11 @@ class AudioThread : public concurrency::OSThread
   private:
     void initOutput()
     {
+#if defined(M5STACK_CARDPUTER_ADV) && defined(ARCH_ESP32)
+        audioOut = std::unique_ptr<AudioOutputI2S>(new CardputerAdvAudioOutputI2S());
+#else
         audioOut = std::unique_ptr<AudioOutputI2S>(new AudioOutputI2S(1, AudioOutputI2S::EXTERNAL_I2S));
+#endif
         audioOut->SetPinout(DAC_I2S_BCK, DAC_I2S_WS, DAC_I2S_DOUT, DAC_I2S_MCLK);
         audioOut->SetGain(0.2);
     };
