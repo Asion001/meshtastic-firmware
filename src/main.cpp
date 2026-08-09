@@ -21,6 +21,9 @@
 #include "power/PowerHAL.h"
 
 #include "FSCommon.h"
+#if defined(M5STACK_CARDPUTER_ADV)
+#include "CardputerAdvSettings.h"
+#endif
 #include "Power.h"
 #include "SPILock.h"
 #include "Throttle.h"
@@ -543,6 +546,7 @@ void setup()
 #if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD)
     setupSDCard();
     restoreConfigurationFromSD();
+    cardputerAdv::loadSettings();
 #endif
 
 #ifdef MESHTASTIC_ENCRYPTED_STORAGE

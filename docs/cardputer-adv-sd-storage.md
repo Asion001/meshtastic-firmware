@@ -21,6 +21,10 @@ The SD layout is:
 
 The `.storage-v1` file identifies an initialized card. Do not edit files while the device is running. Insert or remove the card only while the Cardputer is powered off, then boot with the card installed.
 
+## New-node notifications
+
+When the Cardputer first learns a node's identity, it displays a five-second `New node detected` banner. The alert is enabled by default and can be changed under **System → Notifications → New Node Alerts**. This preference is stored in `/prefs/cardputer_adv_ui.bin` and is therefore mirrored to SD with the other settings.
+
 ## Security
 
 The SD copy includes sensitive Meshtastic state, including channel PSKs and the device private key. A normal FAT-formatted microSD card does not protect these files at rest. Keep the card physically secure and erase it before reuse or disposal.

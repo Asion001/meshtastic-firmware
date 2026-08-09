@@ -1,5 +1,8 @@
 #include "configuration.h"
 #if HAS_SCREEN
+#ifdef M5STACK_CARDPUTER_ADV
+#include "CardputerAdvSettings.h"
+#endif
 #include "ClockRenderer.h"
 #include "Default.h"
 #include "DisplayFormatters.h"
@@ -1265,7 +1268,11 @@ void menuHandler::systemBaseMenu()
     bannerOptions.optionsEnumPtr = optionsEnumArray;
     bannerOptions.bannerCallback = [](int selected) -> void {
         if (selected == Notifications) {
+#ifdef M5STACK_CARDPUTER_ADV
+            menuHandler::menuQueue = menuHandler::NotificationsMenu;
+#else
             menuHandler::menuQueue = menuHandler::BuzzerModeMenuPicker;
+#endif
             screen->runNow();
         } else if (selected == ScreenOptions) {
             menuHandler::menuQueue = menuHandler::ScreenOptionsMenu;
@@ -2221,6 +2228,59 @@ void menuHandler::BuzzerModeMenu()
     screen->showOverlayBanner(bannerOptions);
 }
 
+#ifdef M5STACK_CARDPUTER_ADV
+void menuHandler::notificationsMenu()
+{
+    enum optionsNumbers { Back, SoundMode, NewNodeAlerts, enumEnd };
+    static const char *optionsArray[enumEnd] = {"Back", "Sound Mode", "New Node Alerts"};
+    static const int optionsEnumArray[enumEnd] = {Back, SoundMode, NewNodeAlerts};
+
+    BannerOverlayOptions bannerOptions;
+    bannerOptions.message = "Notifications";
+    bannerOptions.optionsArrayPtr = optionsArray;
+    bannerOptions.optionsEnumPtr = optionsEnumArray;
+    bannerOptions.optionsCount = enumEnd;
+    bannerOptions.bannerCallback = [](int selected) -> void {
+        if (selected == SoundMode) {
+            menuQueue = BuzzerModeMenuPicker;
+        } else if (selected == NewNodeAlerts) {
+            menuQueue = NewNodeNotificationsMenu;
+        } else {
+            menuQueue = SystemBaseMenu;
+        }
+        screen->runNow();
+    };
+    screen->showOverlayBanner(bannerOptions);
+}
+
+void menuHandler::newNodeNotificationsMenu()
+{
+    static const char *optionsArray[] = {"Back", "Enabled", "Disabled"};
+
+    BannerOverlayOptions bannerOptions;
+    bannerOptions.message = "New Node Alerts";
+    bannerOptions.optionsArrayPtr = optionsArray;
+    bannerOptions.optionsCount = 3;
+    bannerOptions.bannerCallback = [](int selected) -> void {
+        if (selected == 0) {
+            menuQueue = NotificationsMenu;
+            screen->runNow();
+            return;
+        }
+
+        bool enabled = selected == 1;
+        if (!cardputerAdv::setNewNodeNotificationsEnabled(enabled)) {
+            screen->showSimpleBanner("Unable to save\nnotification setting", 3000);
+            return;
+        }
+        menuQueue = NotificationsMenu;
+        screen->runNow();
+    };
+    bannerOptions.InitialSelected = cardputerAdv::newNodeNotificationsEnabled() ? 1 : 2;
+    screen->showOverlayBanner(bannerOptions);
+}
+#endif
+
 void menuHandler::BrightnessPickerMenu()
 {
     static const char *optionsArray[] = {"Back", "Low", "Medium", "High"};
@@ -2923,6 +2983,14 @@ void menuHandler::handleMenuSwitch(OLEDDisplay *display)
     case BuzzerModeMenuPicker:
         BuzzerModeMenu();
         break;
+#ifdef M5STACK_CARDPUTER_ADV
+    case NotificationsMenu:
+        notificationsMenu();
+        break;
+    case NewNodeNotificationsMenu:
+        newNodeNotificationsMenu();
+        break;
+#endif
     case MuiPicker:
         switchToMUIMenu();
         break;

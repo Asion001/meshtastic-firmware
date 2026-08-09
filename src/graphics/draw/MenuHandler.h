@@ -29,6 +29,10 @@ class menuHandler
         CompassPointNorthMenu,
         ResetNodeDbMenu,
         BuzzerModeMenuPicker,
+#ifdef M5STACK_CARDPUTER_ADV
+        NotificationsMenu,
+        NewNodeNotificationsMenu,
+#endif
         MuiPicker,
         BrightnessPicker,
         RebootMenu,
@@ -93,6 +97,10 @@ class menuHandler
     static void GPSUpdateIntervalMenu();
     static void GPSPositionBroadcastMenu();
     static void BuzzerModeMenu();
+#ifdef M5STACK_CARDPUTER_ADV
+    static void notificationsMenu();
+    static void newNodeNotificationsMenu();
+#endif
     static void switchToMUIMenu();
     static void nodeListMenu();
     static void resetNodeDBMenu();

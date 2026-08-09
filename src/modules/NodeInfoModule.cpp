@@ -7,6 +7,9 @@
 #include "TransmitHistory.h"
 #include "UptimeClock.h"
 #include "configuration.h"
+#if defined(M5STACK_CARDPUTER_ADV)
+#include "CardputerAdvSettings.h"
+#endif
 #include "gps/RTC.h"
 #include "main.h"
 #include <Throttle.h>
@@ -65,7 +68,18 @@ bool NodeInfoModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, mes
 
     // updateUser() refuses the identity write for a known signer sending unsigned (all unicast
     // NodeInfo), so the exchange above still proceeds but cannot spoof the stored name.
+    meshtastic_NodeInfoLite *previousNode = nodeDB->getMeshNode(sourceNum);
+    bool isNewNode = !previousNode || !nodeInfoLiteHasUser(previousNode);
     bool hasChanged = nodeDB->updateUser(getFrom(&mp), p, mp.channel, mp.xeddsa_signed);
+
+#if defined(M5STACK_CARDPUTER_ADV) && HAS_SCREEN
+    if (isNewNode && hasChanged && cardputerAdv::newNodeNotificationsEnabled() && screen) {
+        char banner[64];
+        const char *nodeName = p.short_name[0] ? p.short_name : p.id;
+        snprintf(banner, sizeof(banner), "New node detected\n%s", nodeName);
+        screen->showSimpleBanner(banner, 5000);
+    }
+#endif
 
     bool wasBroadcast = isBroadcast(mp.to);
 
