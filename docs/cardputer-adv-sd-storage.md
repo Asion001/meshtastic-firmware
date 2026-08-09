@@ -7,6 +7,7 @@ This fork makes the Cardputer ADV microSD card the durable copy of Meshtastic ru
 - On the first boot with a usable SD card, the current internal configuration is copied to `/meshtastic` on the card.
 - On later boots, the SD configuration is restored to internal flash before `NodeDB` loads it.
 - Successful writes to preferences and backups are mirrored to the SD card. Direct file mutations that cannot be mirrored safely in-place mark flash as newer so the complete tree is reconciled on the next boot.
+- The SD filesystem is mounted only while restoring or mirroring data, then unmounted. Files are closed before unmounting and the shared SPI bus remains active for the LoRa radio. This releases the FAT/VFS/card heap while Bluetooth and the interface are running.
 - If the device boots without a usable card, it continues from internal flash and marks that copy as newer. Insert the card and reboot; the newer internal state is then copied to SD instead of being overwritten by stale SD data.
 - A factory reset removes the mirrored preference and backup trees as well as their internal copies.
 

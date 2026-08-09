@@ -39,6 +39,11 @@ class AudioThread : public concurrency::OSThread
     {
         if (!audioOut)
             return;
+
+        // A completed RTTTL generator does not stop AudioOutputI2S by itself.
+        // Release any previous generator (and its DMA-backed I2S driver) before
+        // starting another alert.
+        stop();
 #ifdef AUDIO_AMP_ENABLE
         AUDIO_AMP_ENABLE(true);
 #endif
@@ -60,7 +65,10 @@ class AudioThread : public concurrency::OSThread
     bool isPlaying()
     {
         if (i2sRtttl != nullptr) {
-            return i2sRtttl->isRunning() && i2sRtttl->loop();
+            bool playing = i2sRtttl->isRunning() && i2sRtttl->loop();
+            if (!playing)
+                stop();
+            return playing;
         }
         return false;
     }
