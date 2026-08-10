@@ -28,7 +28,7 @@ namespace graphics::OfflineMapRenderer
 {
 namespace
 {
-constexpr const char *MAP_ROOT = "/gpsmap";
+constexpr const char *MAP_STORAGE_ROOT = "/gpsmap";
 constexpr const char *STATE_FILE = "/gpsmap/gpsmap.ini";
 constexpr const char *STATE_TEMP_FILE = "/gpsmap/gpsmap.ini.tmp";
 constexpr int MAP_WIDTH = 240;
@@ -55,7 +55,9 @@ bool hasUserPosition = false;
 bool manuallyPanned = false;
 bool cacheDirty = true;
 bool foundTile = false;
+bool attemptedTileFallback = false;
 uint32_t lastSaveMillis = 0;
+char tileRoot[64] = "/gpsmap";
 
 constexpr uint8_t BAYER_4X4[16] = {8, 136, 40, 168, 200, 72, 232, 104, 56, 184, 24, 152, 248, 120, 216, 88};
 
@@ -111,35 +113,99 @@ const char *baseName(const char *path)
     return slash ? slash + 1 : path;
 }
 
-bool findFirstTileAtZoom(int tileZoom, int &tileX, int &tileY)
+bool parseNonnegativeInteger(const char *text, long &value, const char **remainder = nullptr)
 {
-    char zoomPath[32];
-    snprintf(zoomPath, sizeof(zoomPath), "%s/%d", MAP_ROOT, tileZoom);
-    File zoomDirectory = SD.open(zoomPath);
-    if (!zoomDirectory || !zoomDirectory.isDirectory())
+    if (!text || !*text)
+        return false;
+    char *end = nullptr;
+    value = strtol(text, &end, 10);
+    if (end == text || value < 0)
+        return false;
+    if (remainder)
+        *remainder = end;
+    return true;
+}
+
+bool parseTilePath(const char *directoryPath, const char *fileName, int &tileZoom, int &tileX, int &tileY,
+                   char *root, size_t rootSize)
+{
+    char directory[128];
+    if (!directoryPath || strlen(directoryPath) >= sizeof(directory))
+        return false;
+    strcpy(directory, directoryPath);
+
+    char *xSeparator = strrchr(directory, '/');
+    if (!xSeparator || !xSeparator[1])
+        return false;
+    long parsedX = 0;
+    const char *remainder = nullptr;
+    if (!parseNonnegativeInteger(xSeparator + 1, parsedX, &remainder) || *remainder != '\0')
+        return false;
+    *xSeparator = '\0';
+
+    char *zoomSeparator = strrchr(directory, '/');
+    if (!zoomSeparator || !zoomSeparator[1])
+        return false;
+    const char *zoomText = zoomSeparator + 1;
+    if (*zoomText == 'z' || *zoomText == 'Z')
+        zoomText++;
+    long parsedZoom = 0;
+    if (!parseNonnegativeInteger(zoomText, parsedZoom, &remainder) || *remainder != '\0' || parsedZoom < MIN_ZOOM ||
+        parsedZoom > MAX_ZOOM)
         return false;
 
-    for (File xEntry = zoomDirectory.openNextFile(); xEntry; xEntry = zoomDirectory.openNextFile()) {
-        if (!xEntry.isDirectory())
-            continue;
+    long parsedY = 0;
+    if (!parseNonnegativeInteger(baseName(fileName), parsedY, &remainder) ||
+        (strcasecmp(remainder, ".jpg") != 0 && strcasecmp(remainder, ".jpeg") != 0))
+        return false;
 
-        char *xEnd = nullptr;
-        const long parsedX = strtol(baseName(xEntry.name()), &xEnd, 10);
-        if (!xEnd || *xEnd != '\0' || parsedX < 0)
-            continue;
+    const long tileLimit = 1L << parsedZoom;
+    if (parsedX >= tileLimit || parsedY >= tileLimit)
+        return false;
 
-        for (File yEntry = xEntry.openNextFile(); yEntry; yEntry = xEntry.openNextFile()) {
-            if (yEntry.isDirectory())
-                continue;
+    const size_t rootLength = static_cast<size_t>(zoomSeparator - directory);
+    if (rootLength >= rootSize)
+        return false;
+    if (rootLength == 0) {
+        if (rootSize < 2)
+            return false;
+        strcpy(root, "/");
+    } else {
+        memcpy(root, directory, rootLength);
+        root[rootLength] = '\0';
+    }
+    tileZoom = static_cast<int>(parsedZoom);
+    tileX = static_cast<int>(parsedX);
+    tileY = static_cast<int>(parsedY);
+    return true;
+}
 
-            char *yEnd = nullptr;
-            const long parsedY = strtol(baseName(yEntry.name()), &yEnd, 10);
-            if (!yEnd || (strcasecmp(yEnd, ".jpg") != 0 && strcasecmp(yEnd, ".jpeg") != 0) || parsedY < 0)
-                continue;
+bool findFirstTileRecursive(const char *directoryPath, uint8_t depth, int &tileZoom, int &tileX, int &tileY, char *root,
+                            size_t rootSize)
+{
+    if (depth > 4)
+        return false;
+    File directory = SD.open(directoryPath);
+    if (!directory || !directory.isDirectory())
+        return false;
 
-            tileX = static_cast<int>(parsedX);
-            tileY = static_cast<int>(parsedY);
-            return true;
+    for (File entry = directory.openNextFile(); entry; entry = directory.openNextFile()) {
+        char entryPath[128];
+        const char *name = baseName(entry.name());
+        if (strcmp(directoryPath, "/") == 0)
+            snprintf(entryPath, sizeof(entryPath), "/%s", name);
+        else
+            snprintf(entryPath, sizeof(entryPath), "%s/%s", directoryPath, name);
+
+        if (entry.isDirectory()) {
+            entry.close();
+            if (findFirstTileRecursive(entryPath, depth + 1, tileZoom, tileX, tileY, root, rootSize))
+                return true;
+        } else {
+            const bool matched = parseTilePath(directoryPath, name, tileZoom, tileX, tileY, root, rootSize);
+            entry.close();
+            if (matched)
+                return true;
         }
     }
     return false;
@@ -155,28 +221,21 @@ bool loadPositionFromFirstTile()
     int tileX = 0;
     int tileY = 0;
     int foundZoom = -1;
-    for (int distance = 0; distance <= MAX_ZOOM - MIN_ZOOM && foundZoom < 0; distance++) {
-        const int higherZoom = DEFAULT_ZOOM + distance;
-        if (higherZoom <= MAX_ZOOM && findFirstTileAtZoom(higherZoom, tileX, tileY)) {
-            foundZoom = higherZoom;
-            break;
-        }
-        const int lowerZoom = DEFAULT_ZOOM - distance;
-        if (distance != 0 && lowerZoom >= MIN_ZOOM && findFirstTileAtZoom(lowerZoom, tileX, tileY)) {
-            foundZoom = lowerZoom;
-            break;
-        }
-    }
-    if (foundZoom < 0)
+    char foundRoot[sizeof(tileRoot)] = {};
+    if (!findFirstTileRecursive(MAP_STORAGE_ROOT, 0, foundZoom, tileX, tileY, foundRoot, sizeof(foundRoot)) &&
+        !findFirstTileRecursive("/", 0, foundZoom, tileX, tileY, foundRoot, sizeof(foundRoot)))
         return false;
 
+    strncpy(tileRoot, foundRoot, sizeof(tileRoot) - 1);
+    tileRoot[sizeof(tileRoot) - 1] = '\0';
     const double scale = static_cast<double>(1UL << foundZoom);
     longitude = (static_cast<double>(tileX) + 0.5) / scale * 360.0 - 180.0;
     latitude = atan(sinh(M_PI * (1.0 - 2.0 * (static_cast<double>(tileY) + 0.5) / scale))) * 180.0 / M_PI;
     zoom = foundZoom;
     hasPosition = true;
     hasUserPosition = false;
-    LOG_INFO("Map centered on SD tile z%d/%d/%d", zoom, tileX, tileY);
+    attemptedTileFallback = true;
+    LOG_INFO("Map tiles found at %s; centered on z%d/%d/%d", tileRoot, zoom, tileX, tileY);
     return true;
 }
 
@@ -221,7 +280,10 @@ int drawJpegBlock(JPEGDRAW *block)
 bool drawTile(int tileX, int tileY, int tileZoom, int screenX, int screenY)
 {
     char path[64];
-    snprintf(path, sizeof(path), "%s/%d/%d/%d.jpg", MAP_ROOT, tileZoom, tileX, tileY);
+    if (strcmp(tileRoot, "/") == 0)
+        snprintf(path, sizeof(path), "/%d/%d/%d.jpg", tileZoom, tileX, tileY);
+    else
+        snprintf(path, sizeof(path), "%s/%d/%d/%d.jpg", tileRoot, tileZoom, tileX, tileY);
     size_t size = 0;
     size_t bytesRead = 0;
     uint8_t *buffer = nullptr;
@@ -299,7 +361,7 @@ void saveState()
     CardputerSDSession session;
     if (!session)
         return;
-    SD.mkdir(MAP_ROOT);
+    SD.mkdir(MAP_STORAGE_ROOT);
     SD.remove(STATE_TEMP_FILE);
     File file = SD.open(STATE_TEMP_FILE, FILE_WRITE);
     if (file) {
@@ -421,6 +483,16 @@ void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *, int16_t x, int16_t y)
 
     if (cacheDirty)
         rebuildCache();
+
+    // A saved position can point outside the tiles currently on the card. Locate actual coverage
+    // once before reporting a missing tile, and also accept converter output nested below /gpsmap.
+    if (!foundTile && !attemptedTileFallback && loadPositionFromFirstTile()) {
+        panX = 0;
+        panY = 0;
+        manuallyPanned = false;
+        cacheDirty = true;
+        rebuildCache();
+    }
 
     if (!foundTile) {
         drawCenteredMessage(display, x, y, "Map tile not found", "/gpsmap/z/x/y.jpg");
