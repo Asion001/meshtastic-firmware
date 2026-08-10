@@ -2232,8 +2232,22 @@ void menuHandler::BuzzerModeMenu()
 void menuHandler::notificationsMenu()
 {
     enum optionsNumbers { Back, SoundMode, NewNodeAlerts, enumEnd };
-    static const char *optionsArray[enumEnd] = {"Back", "Sound Mode", "New Node Alerts"};
+    static char newNodeAlertsLabel[38];
+    static const char *optionsArray[enumEnd] = {"Back", "Sound Mode", newNodeAlertsLabel};
     static const int optionsEnumArray[enumEnd] = {Back, SoundMode, NewNodeAlerts};
+
+    const char *modeLabel = "Off";
+    switch (cardputerAdv::newNodeNotificationMode()) {
+    case cardputerAdv::NewNodeNotificationMode::ToAll:
+        modeLabel = "To all";
+        break;
+    case cardputerAdv::NewNodeNotificationMode::OnlyThis:
+        modeLabel = "Only this";
+        break;
+    case cardputerAdv::NewNodeNotificationMode::Off:
+        break;
+    }
+    snprintf(newNodeAlertsLabel, sizeof(newNodeAlertsLabel), "New Node Alerts: %s", modeLabel);
 
     BannerOverlayOptions bannerOptions;
     bannerOptions.message = "Notifications";
@@ -2255,12 +2269,23 @@ void menuHandler::notificationsMenu()
 
 void menuHandler::newNodeNotificationsMenu()
 {
-    static const char *optionsArray[] = {"Back", "Enabled", "Disabled"};
+    static char toAllLabel[20];
+    static char onlyThisLabel[20];
+    static char offLabel[20];
+    static const char *optionsArray[] = {"Back", toAllLabel, onlyThisLabel, offLabel};
+
+    const auto currentMode = cardputerAdv::newNodeNotificationMode();
+    snprintf(toAllLabel, sizeof(toAllLabel), "[%c] To all",
+             currentMode == cardputerAdv::NewNodeNotificationMode::ToAll ? 'x' : ' ');
+    snprintf(onlyThisLabel, sizeof(onlyThisLabel), "[%c] Only this",
+             currentMode == cardputerAdv::NewNodeNotificationMode::OnlyThis ? 'x' : ' ');
+    snprintf(offLabel, sizeof(offLabel), "[%c] Off",
+             currentMode == cardputerAdv::NewNodeNotificationMode::Off ? 'x' : ' ');
 
     BannerOverlayOptions bannerOptions;
     bannerOptions.message = "New Node Alerts";
     bannerOptions.optionsArrayPtr = optionsArray;
-    bannerOptions.optionsCount = 3;
+    bannerOptions.optionsCount = 4;
     bannerOptions.bannerCallback = [](int selected) -> void {
         if (selected == 0) {
             menuQueue = NotificationsMenu;
@@ -2268,15 +2293,15 @@ void menuHandler::newNodeNotificationsMenu()
             return;
         }
 
-        bool enabled = selected == 1;
-        if (!cardputerAdv::setNewNodeNotificationsEnabled(enabled)) {
+        auto mode = static_cast<cardputerAdv::NewNodeNotificationMode>(selected - 1);
+        if (!cardputerAdv::setNewNodeNotificationMode(mode)) {
             screen->showSimpleBanner("Unable to save\nnotification setting", 3000);
             return;
         }
         menuQueue = NotificationsMenu;
         screen->runNow();
     };
-    bannerOptions.InitialSelected = cardputerAdv::newNodeNotificationsEnabled() ? 1 : 2;
+    bannerOptions.InitialSelected = static_cast<int8_t>(currentMode) + 1;
     screen->showOverlayBanner(bannerOptions);
 }
 #endif
