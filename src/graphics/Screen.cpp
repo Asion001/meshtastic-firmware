@@ -2191,7 +2191,7 @@ int Screen::handleInputEvent(const InputEvent *event)
         }
         return 0;
     }
-    if (ui->getUiState()->currentFrame == framesetInfo.positions.gps && (event->kbchar == 'm' || event->kbchar == 'M')) {
+    if (showingNormalScreen && event->kbchar == 'M') {
         openOfflineMap();
         return 0;
     }
@@ -2444,6 +2444,13 @@ bool Screen::isGamesFrameShown()
 {
     return framesetInfo.positions.games != 255 && ui && ui->getUiState()->currentFrame == framesetInfo.positions.games;
 }
+
+#ifdef M5STACK_CARDPUTER_ADV
+bool Screen::isOfflineMapShown()
+{
+    return offlineMapActive;
+}
+#endif
 
 } // namespace graphics
 

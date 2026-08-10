@@ -280,6 +280,10 @@ class Screen : public concurrency::OSThread
     // True if the always-present games frame is the one currently on screen. Lets the games module
     // ignore D-pad input when the player has navigated to a different frame.
     bool isGamesFrameShown();
+#ifdef M5STACK_CARDPUTER_ADV
+    bool isOfflineMapShown();
+    void closeOfflineMap();
+#endif
 
     bool isScreenOn() { return screenOn; }
 
@@ -788,7 +792,6 @@ class Screen : public concurrency::OSThread
 
 #ifdef M5STACK_CARDPUTER_ADV
     void openOfflineMap();
-    void closeOfflineMap();
     FrameCallback offlineMapFrame[1];
     bool offlineMapActive = false;
 #endif

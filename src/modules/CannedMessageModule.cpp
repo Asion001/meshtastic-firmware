@@ -396,6 +396,21 @@ int CannedMessageModule::handleInputEvent(const InputEvent *event)
         return 0;
     }
 
+#if defined(M5STACK_CARDPUTER_ADV)
+    // Uppercase M is the global map shortcut. The map owns all other keys except lowercase m,
+    // which keeps its global meaning: leave the map and start a message.
+    if (screen) {
+        if (screen->isOfflineMapShown()) {
+            if (event->kbchar == 'm')
+                screen->closeOfflineMap();
+            else
+                return 0;
+        } else if (event->kbchar == 'M') {
+            return 0;
+        }
+    }
+#endif
+
     // Tab key: Always allow switching between canned/destination screens
     if (event->kbchar == INPUT_BROKER_MSG_TAB && handleTabSwitch(event))
         return 1;
