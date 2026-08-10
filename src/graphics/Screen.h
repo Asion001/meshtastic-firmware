@@ -729,9 +729,6 @@ class Screen : public concurrency::OSThread
             uint8_t deviceFocused = 255;
             uint8_t system = 255;
             uint8_t gps = 255;
-#ifdef M5STACK_CARDPUTER_ADV
-            uint8_t map = 255;
-#endif
             uint8_t home = 255;
             uint8_t games = 255;
             uint8_t textMessage = 255;
@@ -788,6 +785,13 @@ class Screen : public concurrency::OSThread
 
     // Sets frame up for immediate drawing
     void setFrameImmediateDraw(FrameCallback *drawFrames);
+
+#ifdef M5STACK_CARDPUTER_ADV
+    void openOfflineMap();
+    void closeOfflineMap();
+    FrameCallback offlineMapFrame[1];
+    bool offlineMapActive = false;
+#endif
 
     /// callback for current alert frame
     FrameCallback alertFrame;

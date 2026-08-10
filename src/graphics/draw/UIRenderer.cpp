@@ -1770,6 +1770,9 @@ void UIRenderer::drawCompassAndLocationScreen(OLEDDisplay *display, OLEDDisplayU
 
     // === Set Title
     const char *titleStr = "Position";
+#if defined(M5STACK_CARDPUTER_ADV)
+    titleStr = "Position   M: Map";
+#endif
 
     // === Header ===
     graphics::drawCommonHeader(display, x, y, titleStr);

@@ -1487,12 +1487,6 @@ void Screen::setFrames(FrameFocus focus)
         indicatorIcons.push_back(icon_compass);
         PUSH_FRAME_TITLE("GPS");
     }
-#if defined(M5STACK_CARDPUTER_ADV)
-    fsi.positions.map = numframes;
-    normalFrames[numframes++] = graphics::OfflineMapRenderer::drawFrame;
-    indicatorIcons.push_back(icon_compass);
-    PUSH_FRAME_TITLE("Map");
-#endif
 #endif
     if (RadioLibInterface::instance && !hiddenFrames.lora) {
         fsi.positions.lora = numframes;
@@ -1660,6 +1654,29 @@ void Screen::setFrameImmediateDraw(FrameCallback *drawFrames)
     ui->setFrames(drawFrames, 1);
     setFastFramerate();
 }
+
+#ifdef M5STACK_CARDPUTER_ADV
+void Screen::openOfflineMap()
+{
+    offlineMapActive = true;
+    showingNormalScreen = false;
+    offlineMapFrame[0] = graphics::OfflineMapRenderer::drawFrame;
+    ui->setOverlays(nullptr, 0);
+    setFrameImmediateDraw(offlineMapFrame);
+    ui->switchToFrame(0);
+    updateUiFrame(ui);
+}
+
+void Screen::closeOfflineMap()
+{
+    offlineMapActive = false;
+    setFrames(FOCUS_PRESERVE);
+    if (framesetInfo.positions.gps != 255)
+        ui->switchToFrame(framesetInfo.positions.gps);
+    setFastFramerate();
+    updateUiFrame(ui);
+}
+#endif
 
 void Screen::toggleFrameVisibility(const std::string &frameName)
 {
@@ -2164,15 +2181,19 @@ int Screen::handleInputEvent(const InputEvent *event)
         return 0;
     }
 #if defined(M5STACK_CARDPUTER_ADV)
-    if (ui->getUiState()->currentFrame == framesetInfo.positions.map) {
-        if (event->kbchar == INPUT_BROKER_MSG_TAB) {
-            showFrame(FrameDirection::NEXT);
+    if (offlineMapActive) {
+        if (event->inputEvent == INPUT_BROKER_BACK || event->inputEvent == INPUT_BROKER_CANCEL) {
+            closeOfflineMap();
             return 0;
         }
         if (graphics::OfflineMapRenderer::handleInput(*event)) {
             setFastFramerate();
-            return 0;
         }
+        return 0;
+    }
+    if (ui->getUiState()->currentFrame == framesetInfo.positions.gps && (event->kbchar == 'm' || event->kbchar == 'M')) {
+        openOfflineMap();
+        return 0;
     }
 #endif
     // UP/DOWN in message screen scrolls through message threads

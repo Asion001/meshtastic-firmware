@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 
 namespace graphics::OfflineMapRenderer
 {
@@ -50,6 +51,7 @@ int panX = 0;
 int panY = 0;
 bool initialized = false;
 bool hasPosition = false;
+bool hasUserPosition = false;
 bool manuallyPanned = false;
 bool cacheDirty = true;
 bool foundTile = false;
@@ -101,6 +103,81 @@ void toPixel(double lat, double lon, int tileZoom, double &pixelX, double &pixel
     const double scale = static_cast<double>(1UL << tileZoom) * TILE_SIZE;
     pixelX = (lon + 180.0) / 360.0 * scale;
     pixelY = (1.0 - asinh(tan(degreesToRadians(lat))) / M_PI) * 0.5 * scale;
+}
+
+const char *baseName(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+bool findFirstTileAtZoom(int tileZoom, int &tileX, int &tileY)
+{
+    char zoomPath[32];
+    snprintf(zoomPath, sizeof(zoomPath), "%s/%d", MAP_ROOT, tileZoom);
+    File zoomDirectory = SD.open(zoomPath);
+    if (!zoomDirectory || !zoomDirectory.isDirectory())
+        return false;
+
+    for (File xEntry = zoomDirectory.openNextFile(); xEntry; xEntry = zoomDirectory.openNextFile()) {
+        if (!xEntry.isDirectory())
+            continue;
+
+        char *xEnd = nullptr;
+        const long parsedX = strtol(baseName(xEntry.name()), &xEnd, 10);
+        if (!xEnd || *xEnd != '\0' || parsedX < 0)
+            continue;
+
+        for (File yEntry = xEntry.openNextFile(); yEntry; yEntry = xEntry.openNextFile()) {
+            if (yEntry.isDirectory())
+                continue;
+
+            char *yEnd = nullptr;
+            const long parsedY = strtol(baseName(yEntry.name()), &yEnd, 10);
+            if (!yEnd || (strcasecmp(yEnd, ".jpg") != 0 && strcasecmp(yEnd, ".jpeg") != 0) || parsedY < 0)
+                continue;
+
+            tileX = static_cast<int>(parsedX);
+            tileY = static_cast<int>(parsedY);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool loadPositionFromFirstTile()
+{
+    concurrency::LockGuard guard(spiLock);
+    CardputerSDSession session;
+    if (!session)
+        return false;
+
+    int tileX = 0;
+    int tileY = 0;
+    int foundZoom = -1;
+    for (int distance = 0; distance <= MAX_ZOOM - MIN_ZOOM && foundZoom < 0; distance++) {
+        const int higherZoom = DEFAULT_ZOOM + distance;
+        if (higherZoom <= MAX_ZOOM && findFirstTileAtZoom(higherZoom, tileX, tileY)) {
+            foundZoom = higherZoom;
+            break;
+        }
+        const int lowerZoom = DEFAULT_ZOOM - distance;
+        if (distance != 0 && lowerZoom >= MIN_ZOOM && findFirstTileAtZoom(lowerZoom, tileX, tileY)) {
+            foundZoom = lowerZoom;
+            break;
+        }
+    }
+    if (foundZoom < 0)
+        return false;
+
+    const double scale = static_cast<double>(1UL << foundZoom);
+    longitude = (static_cast<double>(tileX) + 0.5) / scale * 360.0 - 180.0;
+    latitude = atan(sinh(M_PI * (1.0 - 2.0 * (static_cast<double>(tileY) + 0.5) / scale))) * 180.0 / M_PI;
+    zoom = foundZoom;
+    hasPosition = true;
+    hasUserPosition = false;
+    LOG_INFO("Map centered on SD tile z%d/%d/%d", zoom, tileX, tileY);
+    return true;
 }
 
 void setMapPixel(int x, int y, bool dark)
@@ -207,8 +284,9 @@ bool loadState()
     latitude = savedLatitude;
     longitude = savedLongitude;
     zoom = constrain(savedZoom, MIN_ZOOM, MAX_ZOOM);
-    hasPosition = latitude != 0.0 || longitude != 0.0;
-    return hasPosition;
+    hasPosition = true;
+    hasUserPosition = false;
+    return true;
 }
 
 void saveState()
@@ -239,7 +317,8 @@ void initialize()
     if (initialized)
         return;
     initialized = true;
-    loadState();
+    if (!loadState())
+        loadPositionFromFirstTile();
 }
 
 void updatePositionFromMeshtastic()
@@ -256,6 +335,7 @@ void updatePositionFromMeshtastic()
         latitude = newLatitude;
         longitude = newLongitude;
         hasPosition = true;
+        hasUserPosition = true;
         panX = 0;
         panY = 0;
         cacheDirty = true;
@@ -335,7 +415,7 @@ void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *, int16_t x, int16_t y)
     updatePositionFromMeshtastic();
 
     if (!hasPosition) {
-        drawCenteredMessage(display, x, y, "Waiting for GPS", "or /gpsmap/gpsmap.ini");
+        drawCenteredMessage(display, x, y, "No map tiles found", "Add /gpsmap/z/x/y.jpg");
         return;
     }
 
@@ -350,13 +430,15 @@ void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *, int16_t x, int16_t y)
         display->drawXbm(x, y, MAP_WIDTH, MAP_HEIGHT, mapBitmap);
         registerTFTColorRegionDirect(x, y, MAP_WIDTH, MAP_HEIGHT, TFTPalette::Black, TFTPalette::Cream);
 
-        const int markerX = x + MAP_WIDTH / 2 - panX;
-        const int markerY = y + MAP_HEIGHT / 2 - panY;
-        if (markerX >= x && markerX < x + MAP_WIDTH && markerY >= y && markerY < y + MAP_HEIGHT) {
-            display->setColor(WHITE);
-            display->fillCircle(markerX, markerY, 5);
-            display->setColor(BLACK);
-            display->fillCircle(markerX, markerY, 2);
+        if (hasUserPosition) {
+            const int markerX = x + MAP_WIDTH / 2 - panX;
+            const int markerY = y + MAP_HEIGHT / 2 - panY;
+            if (markerX >= x && markerX < x + MAP_WIDTH && markerY >= y && markerY < y + MAP_HEIGHT) {
+                display->setColor(WHITE);
+                display->fillCircle(markerX, markerY, 5);
+                display->setColor(BLACK);
+                display->fillCircle(markerX, markerY, 2);
+            }
         }
         drawStatus(display, x, y);
     }
