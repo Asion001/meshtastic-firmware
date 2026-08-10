@@ -386,12 +386,20 @@ void unmountCardputerSDLocked()
 bool renameFile(const char *pathFrom, const char *pathTo)
 {
 #ifdef FSCom
+#if defined(M5STACK_CARDPUTER_ADV)
+    // The rename is the commit point for SafeFile writes. Mark flash authoritative before that
+    // point so a reset or power loss between the flash rename and the SD copy cannot let an older
+    // SD file overwrite the new notification/channel setting on the next boot. The marker is
+    // intentionally retained after the per-file mirror; boot performs one full-tree reconciliation
+    // and removes it only after the SD snapshot is complete.
+    markConfigurationFileDirtyForSD(pathTo);
+#endif
     spiLock->lock();
     bool result = FSCom.rename(pathFrom, pathTo);
     spiLock->unlock();
 #if defined(M5STACK_CARDPUTER_ADV)
-    if (result)
-        mirrorConfigurationFileToSD(pathTo);
+    if (result && !mirrorConfigurationFileToSD(pathTo))
+        LOG_WARN("Flash saved %s; SD reconciliation pending", pathTo);
 #endif
     return result;
 #else
@@ -781,6 +789,8 @@ bool mirrorConfigurationFileToSD(const char *path)
     if (!okay) {
         markFlashFallbackDirty();
         LOG_ERROR("Failed to mirror %s to SD", path);
+    } else {
+        LOG_INFO("Mirrored %s to SD", path);
     }
     return okay;
 #else
