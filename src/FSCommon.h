@@ -74,6 +74,12 @@ void setupSDCard();
 // Internal flash remains available while the card is absent.
 bool restoreConfigurationFromSD();
 bool mirrorConfigurationFileToSD(const char *path);
+#if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD)
+// Caller must hold spiLock for the complete mount/file-close/unmount session.
+// These are exposed for Cardputer features such as the offline map renderer.
+bool mountCardputerSDLocked();
+void unmountCardputerSDLocked();
+#endif
 // Record a direct preference mutation that cannot be mirrored immediately.
 // The caller must already hold spiLock when it invokes this helper.
 void markConfigurationFileDirtyForSD(const char *path);

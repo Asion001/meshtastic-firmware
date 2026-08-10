@@ -122,7 +122,7 @@ constexpr const char *FLASH_DIRTY_MARKER = "/prefs/.sd-fallback-dirty";
 bool sdCardMounted = false;
 bool sdSyncInProgress = false;
 
-bool mountCardputerSDLocked(bool logCardDetails)
+bool mountCardputerSDLockedImpl(bool logCardDetails)
 {
     if (sdCardMounted)
         return true;
@@ -160,7 +160,7 @@ bool mountCardputerSDLocked(bool logCardDetails)
     return true;
 }
 
-void unmountCardputerSDLocked()
+void unmountCardputerSDLockedImpl()
 {
     if (!sdCardMounted)
         return;
@@ -363,6 +363,16 @@ bool seedSDFromFlash()
     return markerCreated;
 }
 } // namespace
+
+bool mountCardputerSDLocked()
+{
+    return mountCardputerSDLockedImpl(false);
+}
+
+void unmountCardputerSDLocked()
+{
+    unmountCardputerSDLockedImpl();
+}
 #endif
 
 /**
@@ -687,7 +697,7 @@ void setupSDCard()
 #if defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
     concurrency::LockGuard g(spiLock);
 #ifdef M5STACK_CARDPUTER_ADV
-    if (!mountCardputerSDLocked(true))
+    if (!mountCardputerSDLockedImpl(true))
         return;
 #else
     pinMode(SDCARD_CS, OUTPUT);
@@ -725,7 +735,7 @@ bool restoreConfigurationFromSD()
 {
 #if defined(M5STACK_CARDPUTER_ADV) && defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI) && !defined(HAS_SD_MMC)
     concurrency::LockGuard g(spiLock);
-    if (!mountCardputerSDLocked(false)) {
+    if (!mountCardputerSDLocked()) {
         markFlashFallbackDirty();
         LOG_WARN("Cardputer SD config unavailable; using internal flash until the card returns");
         return false;
@@ -767,7 +777,7 @@ bool mirrorConfigurationFileToSD(const char *path)
         return true;
 
     concurrency::LockGuard g(spiLock);
-    if (!mountCardputerSDLocked(false)) {
+    if (!mountCardputerSDLocked()) {
         markFlashFallbackDirty();
         return false;
     }
