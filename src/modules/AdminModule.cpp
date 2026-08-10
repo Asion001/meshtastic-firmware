@@ -1241,12 +1241,6 @@ void AdminModule::handleSetConfig(const meshtastic_Config &c, bool fromOthers)
 bool AdminModule::handleSetModuleConfig(const meshtastic_ModuleConfig &c)
 {
     bool shouldReboot = true;
-    // If we are in an open transaction or configuring MQTT or Serial (which have validation), defer disabling Bluetooth
-    // Otherwise, disable Bluetooth to prevent the phone from interfering with the config
-    if (!hasOpenEditTransaction && !IS_ONE_OF(c.which_payload_variant, meshtastic_ModuleConfig_mqtt_tag,
-                                              meshtastic_ModuleConfig_serial_tag, meshtastic_ModuleConfig_statusmessage_tag)) {
-        disableBluetooth();
-    }
 
     switch (c.which_payload_variant) {
     case meshtastic_ModuleConfig_mqtt_tag:
@@ -1258,8 +1252,6 @@ bool AdminModule::handleSetModuleConfig(const meshtastic_ModuleConfig &c)
         if (!MQTT::isValidConfig(c.payload_variant.mqtt)) {
             return false;
         }
-        // Disable Bluetooth to prevent interference during MQTT configuration
-        disableBluetooth();
         moduleConfig.has_mqtt = true;
         {
             char prevPass[sizeof(moduleConfig.mqtt.password)];
@@ -1272,12 +1264,10 @@ bool AdminModule::handleSetModuleConfig(const meshtastic_ModuleConfig &c)
     case meshtastic_ModuleConfig_serial_tag:
         LOG_INFO("Set module config: Serial");
         // No architecture guard: the check and the store below must agree on every platform.
-        // disableBluetooth() self-guards on HAS_BLUETOOTH, so it is empty where there is no radio.
         if (!serialConfigIsValid(c.payload_variant.serial)) {
             LOG_ERROR("Invalid serial config");
             return false;
         }
-        disableBluetooth(); // Disable Bluetooth to prevent interference during Serial configuration
         moduleConfig.has_serial = true;
         moduleConfig.serial = c.payload_variant.serial;
         break;
@@ -1442,6 +1432,12 @@ bool AdminModule::handleSetModuleConfig(const meshtastic_ModuleConfig &c)
     }
 #endif
     }
+    // Keep the client connected for the whole begin/commit transaction. In particular, an imported
+    // MQTT or Serial config must not tear down BLE before commit_edit_settings arrives; otherwise
+    // every write remains deferred and is lost on the next boot. The commit handler disables BLE
+    // after the final packet, persists all edited segments, and schedules the normal reboot.
+    if (shouldReboot && !hasOpenEditTransaction)
+        disableBluetooth();
     saveChanges(SEGMENT_MODULECONFIG, shouldReboot);
     return true;
 }
