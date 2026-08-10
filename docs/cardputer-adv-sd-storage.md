@@ -24,7 +24,7 @@ The `.storage-v1` file identifies an initialized card. Do not edit files while t
 
 ## New-node notifications
 
-When the Cardputer first learns a node's identity, it displays a five-second `New node detected` banner. The alert is enabled by default and can be changed under **System → Notifications → New Node Alerts**. This preference is stored in `/prefs/cardputer_adv_ui.bin` and is therefore mirrored to SD with the other settings.
+When the Cardputer first learns a node's identity, it can display a five-second `New node detected` banner. Under **System → Notifications → New Node Alerts**, **To all** alerts for every newly learned node, **Only this** alerts only for NodeInfo addressed directly to this Cardputer, and **Off** disables the banner. The active choice has a check mark and is also shown in the parent Notifications menu. This preference is stored in `/prefs/cardputer_adv_ui.bin` and is therefore mirrored to SD with the other settings. Existing Enabled/Disabled records are migrated automatically.
 
 ## Offline map tab
 

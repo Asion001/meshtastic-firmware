@@ -73,7 +73,11 @@ bool NodeInfoModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, mes
     bool hasChanged = nodeDB->updateUser(getFrom(&mp), p, mp.channel, mp.xeddsa_signed);
 
 #if defined(M5STACK_CARDPUTER_ADV) && HAS_SCREEN
-    if (isNewNode && hasChanged && cardputerAdv::newNodeNotificationsEnabled() && screen) {
+    const auto newNodeMode = cardputerAdv::newNodeNotificationMode();
+    const bool notifyForPacket = newNodeMode == cardputerAdv::NewNodeNotificationMode::ToAll ||
+                                 (newNodeMode == cardputerAdv::NewNodeNotificationMode::OnlyThis &&
+                                  !isBroadcast(mp.to) && isToUs(&mp));
+    if (isNewNode && hasChanged && notifyForPacket && screen) {
         char banner[64];
         const char *nodeName = p.short_name[0] ? p.short_name : p.id;
         snprintf(banner, sizeof(banner), "New node detected\n%s", nodeName);
