@@ -13,6 +13,7 @@
 #include "PowerFSM.h"
 #include "TypeConversions.h"
 #include "UptimeClock.h"
+#include "gps/GPSLog.h"
 #include "gps/RTC.h"
 #include "graphics/draw/MessageRenderer.h"
 #include "main.h"
@@ -99,7 +100,7 @@ int MeshService::handleFromRadio(const meshtastic_MeshPacket *mp)
         //  ignore our request for its NodeInfo
     } else if (mp->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
                !nodeInfoLiteHasUser(nodeDB->getMeshNode(mp->from)) && nodeInfoModule && !isPreferredRebroadcaster &&
-               !nodeDB->isFull()) {
+               nodeDB->isHalfEmpty()) {
         if (airTime->isTxAllowedChannelUtil(true)) {
             const int8_t hopsUsed = getHopsAway(*mp, config.lora.hop_limit);
             if (hopsUsed > (int32_t)(config.lora.hop_limit + 2)) {
@@ -113,9 +114,21 @@ int MeshService::handleFromRadio(const meshtastic_MeshPacket *mp)
         }
     }
 
+    // Our own packet heard back off the mesh, which the duplicate cache only suppresses best-effort.
+    // Clients can't tell an echo from genuine ingress, so it surfaces as an incoming message. Packets
+    // addressed to us are locally-generated feedback (implicit ACK, NAK, routing error), not an echo.
+    if (isFromUs(mp) && !isToUs(mp)) {
+        LOG_DEBUG("Skip phone echo of our own packet 0x%08x", mp->id);
+        return 0;
+    }
+
     printPacket("Forwarding to phone", mp);
-    if (auto *toPhone = packetPool.allocCopy(*mp))
+    if (auto *toPhone = packetPool.allocCopy(*mp)) {
+        // Also overwrites whatever value arrived with the packet.
+        toPhone->ack_proof_status =
+            router ? router->ackProofStatusFor(*mp) : meshtastic_MeshPacket_AckProofStatus_ACK_PROOF_ABSENT;
         sendToPhone(toPhone);
+    }
 
     return 0;
 }
@@ -129,9 +142,15 @@ void MeshService::loop()
             (void)sendQueueStatusToPhone(qs, 0, 0);
     }
     if (oldFromNum != fromNum) { // We don't want to generate extra notifies for multiple new packets
-        int result = fromNumChanged.notifyObservers(fromNum);
-        if (result == 0) // If any observer returns non-zero, we will try again
-            oldFromNum = fromNum;
+        // Snapshot both first: the identity move can run on another task, and anything it bumps during
+        // the pass must still be pending afterwards rather than being marked delivered.
+        const uint32_t num = fromNum;
+        const uint32_t generation = identityGeneration;
+        int result = fromNumChanged.notifyObservers(num);
+        if (result == 0) { // If any observer returns non-zero, we will try again
+            oldFromNum = num;
+            identityGenerationSeen = generation;
+        }
     }
 }
 
@@ -148,6 +167,10 @@ void MeshService::reloadConfig(int saveWhat)
         nodeDB->resetRadioConfig(); // Don't let the phone send us fatally bad settings
 
         configChanged.notifyObservers(NULL); // This will cause radio hardware to change freqs etc
+
+        // Nothing is swept and nothing extra persisted: each node carries the slot it was heard on, so
+        // a client rolling through presets just moves this and moves it back.
+        nodeDB->refreshCommittedLoraSlot();
     }
     nodeDB->saveToDisk(saveWhat);
 }
@@ -181,14 +204,14 @@ NodeNum MeshService::getNodenumFromRequestId(uint32_t request_id)
     return nodenum;
 }
 
-// Back-calculate the real epoch for any queued packet still carrying a millis() rx_time
+// Back-calculate the real epoch for any queued packet still carrying an uptime-seconds rx_time
 // placeholder, now that the clock is trustworthy.
 void MeshService::reconcilePendingRxTimes()
 {
     const uint32_t nowEpoch = getValidTime(RTCQualityFromNet);
     if (nowEpoch == 0) // called before the clock was actually valid - nothing to reconcile against
         return;
-    const uint32_t nowMillis = Time::getMillis();
+    const uint32_t nowUptimeSecs = Time::getUptimeSecs();
 
     // Rotate the queue once. TypedQueue is strictly FIFO on both backends, so dequeueing and
     // re-enqueueing every element in turn leaves the delivery order unchanged.
@@ -197,11 +220,13 @@ void MeshService::reconcilePendingRxTimes()
         if (!p) // drained from under us - nothing left to rotate
             break;
         if (!p->has_rx_time) {
-            // Unsigned subtraction is wraparound-safe; rx_time is a 32-bit wire field, so the
-            // placeholder was never wider than 32 bits to begin with.
-            const uint32_t elapsedMs = nowMillis - p->rx_time;
-            p->rx_time = nowEpoch - (elapsedMs / 1000);
-            p->has_rx_time = true;
+            // Both stamps are monotonic uptime seconds, so the elapsed term is exact at any age.
+            // If it somehow exceeds the epoch, leave the packet un-dated rather than pre-1970.
+            const uint32_t elapsedSecs = nowUptimeSecs - p->rx_time;
+            if (elapsedSecs < nowEpoch) {
+                p->rx_time = nowEpoch - elapsedSecs;
+                p->has_rx_time = true;
+            }
         }
         if (!toPhoneQueue.enqueue(p, 0)) { // mirrors sendToPhone()'s degrade-on-failure path
             LOG_CRIT("Requeue to toPhoneQueue failed");
@@ -267,6 +292,17 @@ void MeshService::injectAsReceived(meshtastic_MeshPacket &p)
  */
 void MeshService::handleToRadio(meshtastic_MeshPacket &p)
 {
+    // Transparent mode: encrypted frames go to the radio as built. Decoded packets are only for this node (admin).
+    if (config.lora.transparent_mode) {
+        if (p.which_payload_variant == meshtastic_MeshPacket_encrypted_tag) {
+            handleTransparentToRadio(p);
+            return;
+        }
+        if (!isToUs(&p)) {
+            (void)sendQueueStatusToPhone(router->getQueueStatus(), ERRNO_DISABLED, p.id);
+            return;
+        }
+    }
 #if defined(ARCH_PORTDUINO)
     if (SimRadio::instance && p.decoded.portnum == meshtastic_PortNum_SIMULATOR_APP) {
         // Simulates device received a packet via the LoRa chip
@@ -287,6 +323,7 @@ void MeshService::handleToRadio(meshtastic_MeshPacket &p)
     p.from = 0;                          // We don't let clients assign nodenums to their sent messages
     p.next_hop = NO_NEXT_HOP_PREFERENCE; // We don't let clients assign next_hop to their sent messages
     p.relay_node = NO_RELAY_NODE;        // We don't let clients assign relay_node to their sent messages
+    p.ack_proof_status = meshtastic_MeshPacket_AckProofStatus_ACK_PROOF_ABSENT; // Only our own ack verification sets it
 
     if (p.id == 0)
         p.id = generatePacketId(); // If the phone didn't supply one, then pick one
@@ -325,6 +362,33 @@ void MeshService::handleToRadio(meshtastic_MeshPacket &p)
     }
 }
 
+void MeshService::handleTransparentToRadio(const meshtastic_MeshPacket &p)
+{
+    ErrorCode res;
+    // Refusals are reported only in the QueueStatus below. No sender: receivers drop it and the radio buffer
+    // encoder asserts on it. Hop fields have 3 header bits each; refuse rather than let the encoder rewrite them.
+    if (p.from == 0 || p.hop_limit > HOP_MAX || p.hop_start > HOP_MAX) {
+        res = meshtastic_Routing_Error_BAD_REQUEST;
+    } else if (meshtastic_MeshPacket *a = packetPool.allocCopy(p)) {
+        // Header and payload stay as given; clear the local scheduling hints a client could use to stall the TX queue.
+        a->tx_after = 0;
+        a->rx_snr = 0;
+        a->rx_rssi = 0;
+        a->has_rx_rssi = false;
+        res = router->sendTransparent(a);
+    } else {
+        res = ERRNO_UNKNOWN;
+    }
+    (void)sendQueueStatusToPhone(router->getQueueStatus(), res, p.id);
+}
+
+void MeshService::handleTransparentFromRadio(meshtastic_MeshPacket *p)
+{
+    powerFSM.trigger(EVENT_PACKET_FOR_PHONE); // wake the client link, as handleFromRadio() does
+    stampRxTime(p);
+    sendToPhone(p);
+}
+
 /** Attempt to cancel a previously sent packet from this _local_ node.  Returns true if a packet was found we could cancel */
 bool MeshService::cancelSending(PacketId id)
 {
@@ -350,12 +414,14 @@ ErrorCode MeshService::sendQueueStatusToPhone(const meshtastic_QueueStatus &qs, 
     lastQueueStatus = *copied;
 
     res = toPhoneQueueStatusQueue.enqueue(copied, 0);
+    if (!res)
+        releaseQueueStatusToPool(copied);
     fromNum++;
 
     return res ? ERRNO_OK : ERRNO_UNKNOWN;
 }
 
-void MeshService::sendToMesh(meshtastic_MeshPacket *p, RxSource src, bool ccToPhone)
+ErrorCode MeshService::sendToMesh(meshtastic_MeshPacket *p, RxSource src, bool ccToPhone)
 {
     uint32_t mesh_packet_id = p->id;
     nodeDB->updateFrom(*p); // update our local DB for this packet (because phone might have sent position packets etc...)
@@ -371,11 +437,14 @@ void MeshService::sendToMesh(meshtastic_MeshPacket *p, RxSource src, bool ccToPh
 
     /* NOTE(pboldin): Prepare and send QueueStatus message to the phone as a
      * high-priority message. */
-    meshtastic_QueueStatus qs = router->getQueueStatus();
-    // SHOULD_RELEASE means "caller frees", not a send failure, so don't report it as one.
-    ErrorCode r = sendQueueStatusToPhone(qs, (res == ERRNO_SHOULD_RELEASE && localDelivery) ? ERRNO_OK : res, mesh_packet_id);
-    if (r != ERRNO_OK) {
-        LOG_DEBUG("Can't send status to phone");
+    // In transparent mode the client only tracks its own sends; on-device ones never go out.
+    if (!config.lora.transparent_mode || src == RX_SRC_USER) {
+        meshtastic_QueueStatus qs = router->getQueueStatus();
+        // SHOULD_RELEASE means "caller frees", not a send failure, so don't report it as one.
+        ErrorCode r = sendQueueStatusToPhone(qs, (res == ERRNO_SHOULD_RELEASE && localDelivery) ? ERRNO_OK : res, mesh_packet_id);
+        if (r != ERRNO_OK) {
+            LOG_DEBUG("Can't send status to phone");
+        }
     }
 
     if ((res == ERRNO_OK || res == ERRNO_SHOULD_RELEASE) && ccToPhone) { // Check if p is not released in case it couldn't be sent
@@ -391,6 +460,8 @@ void MeshService::sendToMesh(meshtastic_MeshPacket *p, RxSource src, bool ccToPh
     if (res == ERRNO_SHOULD_RELEASE) {
         releaseToPool(p);
     }
+
+    return res;
 }
 
 bool MeshService::trySendPosition(NodeNum dest, bool wantReplies)
@@ -399,46 +470,38 @@ bool MeshService::trySendPosition(NodeNum dest, bool wantReplies)
 
     assert(node);
 
-    if (nodeDB->hasValidPosition(node)) {
 #if HAS_GPS && !MESHTASTIC_EXCLUDE_GPS
-        if (positionModule) {
-            if (!config.position.fixed_position && !nodeDB->hasLocalPositionSinceBoot()) {
-                LOG_DEBUG("Skip position ping; no fresh position since boot");
-                return false;
-            }
-            // Prefer the node's current channel, but fall back to the first channel with
-            // position enabled (matching PositionModule::sendOurPosition() behavior).
-            uint8_t sendChan = node->channel;
-            if (getPositionPrecisionForChannel(sendChan) == 0) {
-                bool found = false;
-                for (uint8_t ch = 0; ch < 8; ++ch) {
-                    if (getPositionPrecisionForChannel(ch) != 0) {
-                        sendChan = ch;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    // No channel with position enabled: fall back to sending nodeinfo, as before.
-                    if (nodeInfoModule) {
-                        LOG_INFO("No position-enabled channel; send nodeinfo instead to 0x%08x, wantReplies=%d, channel=%d", dest,
-                                 wantReplies, node->channel);
-                        nodeInfoModule->sendOurNodeInfo(dest, wantReplies, node->channel);
-                    }
-                    return false;
-                }
-            }
-            LOG_INFO("Send position ping to 0x%08x, wantReplies=%d, channel=%d", dest, wantReplies, sendChan);
-            positionModule->sendOurPosition(dest, wantReplies, sendChan);
+    // Prefer the node's current channel, but fall back to the position channel
+    // (matching PositionModule::sendOurPosition() behavior).
+    uint8_t sendChan = node->channel;
+    if (nodeDB->hasValidPosition(node) && positionModule &&
+        (config.position.fixed_position || nodeDB->hasLocalPositionSinceBoot()) &&
+        (getPositionPrecisionForChannel(sendChan) != 0 || findPositionChannel(sendChan))) {
+        LOG_INFO("Send position ping to 0x%08x, wantReplies=%d, channel=%d", dest, wantReplies, sendChan);
+        if (positionModule->sendOurPosition(dest, wantReplies, sendChan))
             return true;
-        }
-    } else {
-#endif
-        if (nodeInfoModule) {
-            LOG_INFO("Send nodeinfo ping to 0x%08x, wantReplies=%d, channel=%d", dest, wantReplies, node->channel);
-            nodeInfoModule->sendOurNodeInfo(dest, wantReplies, node->channel);
-        }
     }
+#endif
+    // No position went out, so a false return tells the callers the nodeinfo fallback was used.
+    if (nodeInfoModule) {
+        LOG_INFO("Send nodeinfo ping to 0x%08x, wantReplies=%d, channel=%d", dest, wantReplies, node->channel);
+        nodeInfoModule->sendOurNodeInfo(dest, wantReplies, node->channel);
+    }
+    return false;
+}
+
+// ASCII BEL, the in-band alert marker. Numeric so no control byte sits in the source, and
+// file-local because ASCII_BELL is already a macro in Screen.cpp and ExternalNotificationModule.cpp.
+static const uint8_t kAsciiBell = 7;
+
+bool MeshService::isAlertPayload(const meshtastic_MeshPacket &p)
+{
+    if (!moduleConfig.external_notification.alert_bell && !moduleConfig.external_notification.alert_bell_vibra &&
+        !moduleConfig.external_notification.alert_bell_buzzer)
+        return false;
+    for (pb_size_t i = 0; i < p.decoded.payload.size; i++)
+        if (p.decoded.payload.bytes[i] == kAsciiBell)
+            return true;
     return false;
 }
 
@@ -464,7 +527,9 @@ bool MeshService::phonePayloadIsDecodable(const meshtastic_Data &d)
 
 void MeshService::sendToPhone(meshtastic_MeshPacket *p)
 {
-    perhapsDecode(p);
+    if (!config.lora.transparent_mode)
+        perhapsDecode(p);
+    coerceNodeInfoUserId(*p);
 
     // Withhold decoded nested payloads a strict phone decoder would reject; still-encrypted packets
     // pass through (the phone may hold the key).
@@ -477,7 +542,8 @@ void MeshService::sendToPhone(meshtastic_MeshPacket *p)
 
 #ifdef ARCH_ESP32
 #if !MESHTASTIC_EXCLUDE_STOREFORWARD
-    if (moduleConfig.store_forward.enabled && storeForwardModule->isServer() &&
+    if (moduleConfig.store_forward.enabled && storeForwardModule && storeForwardModule->isServer() &&
+        p->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
         p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP) {
         releaseToPool(p); // Copy is already stored in StoreForward history
         fromNum++;        // Notify observers for packet from radio
@@ -487,8 +553,11 @@ void MeshService::sendToPhone(meshtastic_MeshPacket *p)
 #endif
 
     if (toPhoneQueue.numFree() == 0) {
-        if (p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP ||
-            p->decoded.portnum == meshtastic_PortNum_RANGE_TEST_APP) {
+        // ROUTING_APP is the phone's only delivery confirmation, so it displaces the oldest like
+        // text does. Gate the variant: decoded.portnum aliases encrypted.size in the union.
+        if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
+            (p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP ||
+             p->decoded.portnum == meshtastic_PortNum_RANGE_TEST_APP || p->decoded.portnum == meshtastic_PortNum_ROUTING_APP)) {
             LOG_WARN("ToPhone queue full, discard oldest");
             meshtastic_MeshPacket *d = toPhoneQueue.dequeuePtr(0);
             if (d)
@@ -596,9 +665,7 @@ int MeshService::onGPSChanged(const meshtastic::GPSStatus *newStatus)
         pos = gps->p;
     } else {
         // The GPS has lost lock
-#ifdef GPS_DEBUG
-        LOG_DEBUG("onGPSchanged() - lost validLocation");
-#endif
+        LOG_DEBUG_GPS("onGPSchanged() - lost validLocation");
     }
     // Used fixed position if configured regardless of GPS lock
     if (config.position.fixed_position) {
@@ -628,7 +695,7 @@ bool MeshService::isToPhoneQueueEmpty()
 
 uint32_t MeshService::GetTimeSinceMeshPacket(const meshtastic_MeshPacket *mp)
 {
-    // rx_time may be a millis() placeholder while has_rx_time is false - don't age it as
+    // rx_time may be an uptime-seconds placeholder while has_rx_time is false - don't age it as
     // wall-clock, and don't pass it off as "just now" either.
     if (!mp->has_rx_time)
         return SINCE_UNKNOWN;

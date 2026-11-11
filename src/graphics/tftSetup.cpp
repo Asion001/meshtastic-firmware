@@ -15,19 +15,17 @@
 #endif
 
 #if defined(ARCH_PORTDUINO) || !defined(HAS_FREE_RTOS)
-#include <cstdio>
-#include <cstdlib>
 #include <thread>
 #endif
 
 #ifdef SENSECAP_INDICATOR
-#include "graphics/map/RemoteSDService.h"
 #include "input/I2CKeyboardScanner.h"
 #include "mesh/IndicatorSerial.h"
 #include "mesh/comms/I2CProxy.h"
+#include "storage/RemoteStorage.h"
 
-// Serves the UI map tiles from the SD card behind the RP2040, chunk-wise
-// over the interdevice link.
+// Serves the UI storage (map tiles, key backups) from the SD card behind the
+// RP2040, chunk-wise over the interdevice link.
 //
 // Retry policy: a lost frame (timeout) and a co-processor busy with card
 // maintenance (FILE_BUSY) are transient, so they are retried; a request the
@@ -235,10 +233,8 @@ DeviceScreen *deviceScreen = nullptr;
 
 #ifdef ARCH_ESP32
 // Get notified when the system is entering light sleep
-CallbackObserver<DeviceScreen, void *> tftSleepObserver =
-    CallbackObserver<DeviceScreen, void *>(deviceScreen, &DeviceScreen::prepareSleep);
-CallbackObserver<DeviceScreen, esp_sleep_wakeup_cause_t> endSleepObserver =
-    CallbackObserver<DeviceScreen, esp_sleep_wakeup_cause_t>(deviceScreen, &DeviceScreen::wakeUp);
+static CallbackObserver<DeviceScreen, void *> *tftSleepObserver = nullptr;
+static CallbackObserver<DeviceScreen, esp_sleep_wakeup_cause_t> *endSleepObserver = nullptr;
 #endif
 
 /**
@@ -275,6 +271,22 @@ class ReentrantSpiLock : public ISpiLock
         spiLock->lock();
         owner = self;
         depth = 1;
+    }
+
+    bool lock(uint32_t timeout) override
+    {
+        ThreadId self = currentThread();
+        if (depth && owner == self) {
+            depth++;
+            return true;
+        }
+        // A timed-out take holds nothing: claiming ownership anyway would let this thread's next
+        // lock() skip the real acquire, and its unlock() release a bus it never held.
+        if (!spiLock->lock(timeout))
+            return false;
+        owner = self;
+        depth = 1;
+        return true;
     }
 
     void unlock(void) override
@@ -314,7 +326,7 @@ void tft_task_handler(void *param = nullptr)
 void tftSetup(void)
 {
 #ifdef SENSECAP_INDICATOR
-    RemoteSDService::setBackend(new IndicatorRemoteFS());
+    RemoteStorage::setBackend(new IndicatorRemoteFS());
     // the second bus is bridged to the RP2040, keep the keyboard scan off the
     // uninitialized local Wire1
     I2CKeyboardScanner::setSecondaryBus(i2cProxy);
@@ -340,15 +352,11 @@ void tftSetup(void)
 #elif defined(USE_FRAMEBUFFER)
         if (portduino_config.displayPanel == fb) {
             // Rotation from yaml Display.OffsetRotate: 1=90, 2=180, 3=270 deg
-            char rbuf[4];
-            snprintf(rbuf, sizeof(rbuf), "%d", portduino_config.displayRotate ? (portduino_config.displayOffsetRotate & 3) : 0);
-            if (setenv("MESHTASTIC_FB_ROTATION", rbuf, 1) != 0)
-                LOG_ERROR("Failed to set MESHTASTIC_FB_ROTATION, framebuffer will use its default rotation");
-            if (portduino_config.displayWidth && portduino_config.displayHeight)
-                displayConfig = DisplayDriverConfig(DisplayDriverConfig::device_t::FB, (uint16_t)portduino_config.displayWidth,
-                                                    (uint16_t)portduino_config.displayHeight);
-            else
-                displayConfig.device(DisplayDriverConfig::device_t::FB);
+            displayConfig.device(DisplayDriverConfig::device_t::FB)
+                .panel(DisplayDriverConfig::panel_config_t{.type = panels[portduino_config.displayPanel],
+                                                           .panel_width = (uint16_t)portduino_config.displayWidth,
+                                                           .panel_height = (uint16_t)portduino_config.displayHeight,
+                                                           .offset_rotation = (uint8_t)portduino_config.displayOffsetRotate});
         } else
 #endif
         {
@@ -413,8 +421,14 @@ void tftSetup(void)
 
     if (deviceScreen) {
 #ifdef ARCH_ESP32
-        tftSleepObserver.observe(&notifyLightSleep);
-        endSleepObserver.observe(&notifyLightSleepEnd);
+        if (!tftSleepObserver) {
+            tftSleepObserver = new CallbackObserver<DeviceScreen, void *>(deviceScreen, &DeviceScreen::prepareSleep);
+        }
+        if (!endSleepObserver) {
+            endSleepObserver = new CallbackObserver<DeviceScreen, esp_sleep_wakeup_cause_t>(deviceScreen, &DeviceScreen::wakeUp);
+        }
+        tftSleepObserver->observe(&notifyLightSleep);
+        endSleepObserver->observe(&notifyLightSleepEnd);
         xTaskCreatePinnedToCore(tft_task_handler, "tft", TFT_TASK_STACK_SIZE, NULL, 1, NULL, 0);
 #elif defined(ARCH_PORTDUINO)
         std::thread *tft_task = new std::thread([] { tft_task_handler(); });

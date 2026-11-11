@@ -8,6 +8,7 @@
 #include "SPILock.h"
 #include "SafeFile.h"
 #include "SecureZero.h"
+#include "UptimeClock.h"
 #include "gps/RTC.h"
 #include <algorithm>
 
@@ -1283,9 +1284,9 @@ bool unlockWithPassphrase(const uint8_t *passphrase, size_t passphraseLen, uint8
         writeBackoff(reservedAttempts, 0, now);
     }
     auto onFailure = [reservedAttempts]() {
-        s_lastFailMillis = millis();
-        if (s_lastFailMillis == 0)
-            s_lastFailMillis = 1; // sentinel: never 0 after a real fail
+        // TODO(elapsed-stamp): 0 doubles as "no failure yet" and the backoff read above is still on
+        // millis(); wants the sentinel's necessity and the clock split settled together, not a dodge.
+        s_lastFailMillis = Time::skipZero(Time::getMillis());
         s_backoffSecondsRemaining = backoffDelay(reservedAttempts);
         LOG_WARN("EncryptedStorage: Wrong passphrase (attempt %u, next in ~%us)", (unsigned)reservedAttempts,
                  s_backoffSecondsRemaining);
