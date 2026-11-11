@@ -1204,7 +1204,16 @@ TFTDisplay::TFTDisplay(uint8_t address, int sda, int scl, OLEDDISPLAY_GEOMETRY g
     backlightEnable = p;
 
 #if ARCH_PORTDUINO
-    if (portduino_config.displayRotate) {
+    if (portduino_config.displayPanel == x11) {
+        // The X11/SDL window is the panel itself, so give BaseUI the real logical size instead of the
+        // square canvas used for SPI panels. Rotate swaps the panel axes and an odd OffsetRotate swaps
+        // them back, which lets a non-square simulator (e.g. Cardputer 240x135) lay out correctly.
+        const bool swapped = portduino_config.displayRotate != ((portduino_config.displayOffsetRotate & 1) != 0);
+        if (swapped)
+            setGeometry(GEOMETRY_RAWMODE, portduino_config.displayHeight, portduino_config.displayWidth);
+        else
+            setGeometry(GEOMETRY_RAWMODE, portduino_config.displayWidth, portduino_config.displayHeight);
+    } else if (portduino_config.displayRotate) {
         setGeometry(GEOMETRY_RAWMODE, portduino_config.displayWidth, portduino_config.displayWidth);
     } else {
         setGeometry(GEOMETRY_RAWMODE, portduino_config.displayHeight, portduino_config.displayHeight);
