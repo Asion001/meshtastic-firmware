@@ -1,0 +1,22 @@
+# Desktop simulator profile for the M5Stack Cardputer-Adv screen.
+# Used by bin/cardputer-sim.sh with the native-tft build (meshtasticd).
+#
+# - Lora "sim" means no radio hardware; packets go through the simulated radio.
+# - The X11 panel opens an SDL window sized like the Cardputer's 240x135 ST7789.
+#   OffsetRotate 0 keeps the window landscape and BaseUI laid out at 240x135.
+# - DisplayMode TWOCOLOR forces BaseUI (the UI the Cardputer uses) instead of MUI.
+Lora:
+  Module: sim
+
+Display:
+  Panel: X11
+  Width: 240
+  Height: 135
+  OffsetRotate: 0
+
+Config:
+  DisplayMode: TWOCOLOR
+
+General:
+  MaxNodes: 200
+  MaxMessageQueue: 100

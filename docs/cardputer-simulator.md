@@ -61,7 +61,7 @@ the Linux machine, or `bin/test-native-docker.sh` for unit tests.
 
 ## Config used
 
-[`bin/cardputer-sim/config.yaml`](../bin/cardputer-sim/config.yaml): sim radio, X11 panel at
+[`bin/cardputer-sim.yaml`](../bin/cardputer-sim.yaml): sim radio, X11 panel at
 240x135 with `OffsetRotate: 0`, and `DisplayMode: TWOCOLOR` to force BaseUI instead of MUI.
 
 `TFTDisplay` used to give BaseUI a square canvas on every Linux TFT panel (height x height without

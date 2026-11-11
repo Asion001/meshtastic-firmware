@@ -18,7 +18,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_NAME="native-tft"
 BIN="$ROOT/.pio/build/$ENV_NAME/meshtasticd"
-CONFIG="$ROOT/bin/cardputer-sim/config.yaml"
+CONFIG="$ROOT/bin/cardputer-sim.yaml"
 SIM_NAME="${SIM_NAME:-cardputer}"
 SIM_MAC="${SIM_MAC:-AA:BB:CC:DD:EE:01}"
 SIM_PORT="${SIM_PORT:-4403}"
