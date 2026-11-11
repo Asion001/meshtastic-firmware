@@ -12,13 +12,16 @@
 
 #include "FSCommon.h"
 #include "GPSStatus.h"
+#include "NodeDB.h"
 #include "SPILock.h"
 #include "graphics/ScreenFonts.h"
 #include "graphics/TFTColorRegions.h"
 #include "graphics/TFTPalette.h"
+#include "gps/GeoCoord.h"
 
 #include <JPEGDEC.h>
 #include <SD.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +44,9 @@ constexpr int DEFAULT_ZOOM = 12;
 constexpr int PAN_STEP = 50;
 constexpr size_t MAX_JPEG_SIZE = 36 * 1024;
 constexpr uint32_t SAVE_INTERVAL_MS = 60 * 1000UL;
+constexpr int STATUS_BAR_HEIGHT = 12;
+constexpr int NODE_MARKER_HALF = 3;
+constexpr int EDGE_MARGIN = 5;
 
 uint8_t mapBitmap[BITMAP_STRIDE * MAP_HEIGHT] = {};
 JPEGDEC jpeg;
@@ -51,12 +57,12 @@ int panX = 0;
 int panY = 0;
 bool initialized = false;
 bool hasPosition = false;
-bool hasUserPosition = false;
 bool manuallyPanned = false;
 bool cacheDirty = true;
 bool foundTile = false;
 bool attemptedTileFallback = false;
 uint32_t lastSaveMillis = 0;
+NodeNum focusedNode = 0;
 char tileRoot[64] = "/gpsmap";
 
 constexpr uint8_t BAYER_4X4[16] = {8, 136, 40, 168, 200, 72, 232, 104, 56, 184, 24, 152, 248, 120, 216, 88};
@@ -233,7 +239,6 @@ bool loadPositionFromFirstTile()
     latitude = atan(sinh(M_PI * (1.0 - 2.0 * (static_cast<double>(tileY) + 0.5) / scale))) * 180.0 / M_PI;
     zoom = foundZoom;
     hasPosition = true;
-    hasUserPosition = false;
     attemptedTileFallback = true;
     LOG_INFO("Map tiles found at %s; centered on z%d/%d/%d", tileRoot, zoom, tileX, tileY);
     return true;
@@ -347,7 +352,6 @@ bool loadState()
     longitude = savedLongitude;
     zoom = constrain(savedZoom, MIN_ZOOM, MAX_ZOOM);
     hasPosition = true;
-    hasUserPosition = false;
     return true;
 }
 
@@ -397,7 +401,6 @@ void updatePositionFromMeshtastic()
         latitude = newLatitude;
         longitude = newLongitude;
         hasPosition = true;
-        hasUserPosition = true;
         panX = 0;
         panY = 0;
         cacheDirty = true;
@@ -436,6 +439,191 @@ void rebuildCache()
     cacheDirty = false;
 }
 
+// Screen offset of a coordinate relative to the map's top-left corner at the current view.
+void projectToScreen(double lat, double lon, int &screenX, int &screenY)
+{
+    double centerPixelX = 0.0;
+    double centerPixelY = 0.0;
+    double pointPixelX = 0.0;
+    double pointPixelY = 0.0;
+    toPixel(latitude, longitude, zoom, centerPixelX, centerPixelY);
+    toPixel(lat, lon, zoom, pointPixelX, pointPixelY);
+    screenX = MAP_WIDTH / 2 - panX + static_cast<int>(lround(pointPixelX - centerPixelX));
+    screenY = MAP_HEIGHT / 2 - panY + static_cast<int>(lround(pointPixelY - centerPixelY));
+}
+
+bool isOnMap(int screenX, int screenY)
+{
+    return screenX >= 0 && screenX < MAP_WIDTH && screenY >= STATUS_BAR_HEIGHT && screenY < MAP_HEIGHT;
+}
+
+bool getNodeLatLon(const meshtastic_NodeInfoLite *node, double &lat, double &lon)
+{
+    if (!node || !nodeDB->hasValidPosition(node))
+        return false;
+    meshtastic_PositionLite position;
+    if (!nodeDB->copyNodePosition(node->num, position))
+        return false;
+    lat = position.latitude_i * 1e-7;
+    lon = position.longitude_i * 1e-7;
+    return lat >= -85.0 && lat <= 85.0 && lon >= -180.0 && lon <= 180.0;
+}
+
+bool getOwnLatLon(double &lat, double &lon)
+{
+    if (!gpsStatus || (!gpsStatus->getHasLock() && !config.position.fixed_position))
+        return false;
+    lat = gpsStatus->getLatitude() * 1e-7;
+    lon = gpsStatus->getLongitude() * 1e-7;
+    return (lat != 0.0 || lon != 0.0) && lat >= -85.0 && lat <= 85.0 && lon >= -180.0 && lon <= 180.0;
+}
+
+const char *nodeLabel(const meshtastic_NodeInfoLite *node, char *buffer, size_t size)
+{
+    if (node->short_name[0])
+        return node->short_name;
+    snprintf(buffer, size, "%04x", static_cast<unsigned>(node->num & 0xffff));
+    return buffer;
+}
+
+// Step focus to the next (direction > 0) or previous positioned node and centre the map on it.
+bool focusNextNode(int direction)
+{
+    if (!nodeDB)
+        return false;
+    const size_t count = nodeDB->getNumMeshNodes();
+    if (count == 0)
+        return false;
+
+    const NodeNum ownNode = nodeDB->getNodeNum();
+    int start = -1;
+    for (size_t i = 0; i < count; i++) {
+        const meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
+        if (node && node->num == focusedNode) {
+            start = static_cast<int>(i);
+            break;
+        }
+    }
+    if (start < 0)
+        start = direction > 0 ? -1 : 0;
+
+    for (size_t step = 1; step <= count; step++) {
+        const int total = static_cast<int>(count);
+        const int index = ((start + direction * static_cast<int>(step)) % total + total) % total;
+        const meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(index);
+        double lat = 0.0;
+        double lon = 0.0;
+        if (!node || node->num == ownNode || !getNodeLatLon(node, lat, lon))
+            continue;
+        focusedNode = node->num;
+        latitude = lat;
+        longitude = lon;
+        hasPosition = true;
+        manuallyPanned = true;
+        panX = 0;
+        panY = 0;
+        return true;
+    }
+    return false;
+}
+
+void drawNodeLabel(OLEDDisplay *display, int16_t x, int16_t y, int markerX, int markerY, const char *label)
+{
+    const int width = display->getStringWidth(label) + 2;
+    int labelX = markerX + NODE_MARKER_HALF + 2;
+    if (labelX + width > MAP_WIDTH)
+        labelX = markerX - NODE_MARKER_HALF - 2 - width;
+    int labelY = markerY - FONT_HEIGHT_SMALL / 2;
+    labelY = constrain(labelY, STATUS_BAR_HEIGHT, MAP_HEIGHT - FONT_HEIGHT_SMALL);
+
+    // The map region maps WHITE to dark ink and BLACK to paper, so draw dark text on a paper box.
+    display->setColor(BLACK);
+    display->fillRect(x + labelX, y + labelY, width, FONT_HEIGHT_SMALL);
+    display->setColor(WHITE);
+    display->drawString(x + labelX + 1, y + labelY, label);
+}
+
+// Small arrowhead on the map edge pointing toward an off-screen node.
+void drawEdgeArrow(OLEDDisplay *display, int16_t x, int16_t y, int screenX, int screenY)
+{
+    const float centerX = MAP_WIDTH / 2.0f;
+    const float centerY = (MAP_HEIGHT + STATUS_BAR_HEIGHT) / 2.0f;
+    const float dx = screenX - centerX;
+    const float dy = screenY - centerY;
+    const float halfWidth = centerX - EDGE_MARGIN;
+    const float halfHeight = (MAP_HEIGHT - STATUS_BAR_HEIGHT) / 2.0f - EDGE_MARGIN;
+    if (dx == 0.0f && dy == 0.0f)
+        return;
+    const float scale = std::min(halfWidth / std::max(fabsf(dx), 0.001f), halfHeight / std::max(fabsf(dy), 0.001f));
+    const float tipX = centerX + dx * scale;
+    const float tipY = centerY + dy * scale;
+    const float length = sqrtf(dx * dx + dy * dy);
+    const float unitX = dx / length;
+    const float unitY = dy / length;
+    const float baseX = tipX - unitX * 6.0f;
+    const float baseY = tipY - unitY * 6.0f;
+    display->setColor(WHITE);
+    display->fillTriangle(x + lroundf(tipX), y + lroundf(tipY), x + lroundf(baseX - unitY * 3.0f),
+                          y + lroundf(baseY + unitX * 3.0f), x + lroundf(baseX + unitY * 3.0f),
+                          y + lroundf(baseY - unitX * 3.0f));
+}
+
+void drawNodes(OLEDDisplay *display, int16_t x, int16_t y)
+{
+    if (!nodeDB)
+        return;
+    display->setFont(FONT_SMALL);
+    display->setTextAlignment(TEXT_ALIGN_LEFT);
+
+    const NodeNum ownNode = nodeDB->getNodeNum();
+    const size_t count = nodeDB->getNumMeshNodes();
+    for (size_t i = 0; i < count; i++) {
+        const meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
+        double lat = 0.0;
+        double lon = 0.0;
+        if (!node || node->num == ownNode || !getNodeLatLon(node, lat, lon))
+            continue;
+
+        int screenX = 0;
+        int screenY = 0;
+        projectToScreen(lat, lon, screenX, screenY);
+        if (!isOnMap(screenX, screenY)) {
+            drawEdgeArrow(display, x, y, screenX, screenY);
+            continue;
+        }
+
+        const bool focused = node->num == focusedNode;
+        const int half = focused ? NODE_MARKER_HALF + 1 : NODE_MARKER_HALF;
+        display->setColor(WHITE);
+        display->fillRect(x + screenX - half, y + screenY - half, half * 2 + 1, half * 2 + 1);
+        display->setColor(BLACK);
+        if (focused)
+            display->drawRect(x + screenX - half + 1, y + screenY - half + 1, half * 2 - 1, half * 2 - 1);
+        else
+            display->setPixel(x + screenX, y + screenY);
+
+        char fallback[8];
+        drawNodeLabel(display, x, y, screenX, screenY, nodeLabel(node, fallback, sizeof(fallback)));
+    }
+}
+
+void drawOwnPosition(OLEDDisplay *display, int16_t x, int16_t y)
+{
+    double lat = 0.0;
+    double lon = 0.0;
+    if (!getOwnLatLon(lat, lon))
+        return;
+    int screenX = 0;
+    int screenY = 0;
+    projectToScreen(lat, lon, screenX, screenY);
+    if (!isOnMap(screenX, screenY))
+        return;
+    display->setColor(WHITE);
+    display->fillCircle(x + screenX, y + screenY, 5);
+    display->setColor(BLACK);
+    display->fillCircle(x + screenX, y + screenY, 2);
+}
+
 void drawStatus(OLEDDisplay *display, int16_t x, int16_t y)
 {
     display->setFont(FONT_SMALL);
@@ -445,7 +633,26 @@ void drawStatus(OLEDDisplay *display, int16_t x, int16_t y)
     display->setColor(BLACK);
 
     char left[42];
-    snprintf(left, sizeof(left), "MAP Z%d %.4f %.4f", zoom, latitude, longitude);
+    const meshtastic_NodeInfoLite *focused = focusedNode && nodeDB ? nodeDB->getMeshNode(focusedNode) : nullptr;
+    double nodeLat = 0.0;
+    double nodeLon = 0.0;
+    if (focused && getNodeLatLon(focused, nodeLat, nodeLon)) {
+        char fallback[8];
+        const char *label = nodeLabel(focused, fallback, sizeof(fallback));
+        double ownLat = 0.0;
+        double ownLon = 0.0;
+        if (getOwnLatLon(ownLat, ownLon)) {
+            const float meters = GeoCoord::latLongToMeter(ownLat, ownLon, nodeLat, nodeLon);
+            if (meters >= 1000.0f)
+                snprintf(left, sizeof(left), "MAP Z%d %s %.1fkm", zoom, label, meters / 1000.0f);
+            else
+                snprintf(left, sizeof(left), "MAP Z%d %s %dm", zoom, label, static_cast<int>(meters));
+        } else {
+            snprintf(left, sizeof(left), "MAP Z%d %s %.4f %.4f", zoom, label, nodeLat, nodeLon);
+        }
+    } else {
+        snprintf(left, sizeof(left), "MAP Z%d %.4f %.4f", zoom, latitude, longitude);
+    }
     display->drawString(x + 3, y, left);
 
     if (gpsStatus && gpsStatus->getHasLock()) {
@@ -502,16 +709,8 @@ void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *, int16_t x, int16_t y)
         display->drawXbm(x, y, MAP_WIDTH, MAP_HEIGHT, mapBitmap);
         registerTFTColorRegionDirect(x, y, MAP_WIDTH, MAP_HEIGHT, TFTPalette::Black, TFTPalette::Cream);
 
-        if (hasUserPosition) {
-            const int markerX = x + MAP_WIDTH / 2 - panX;
-            const int markerY = y + MAP_HEIGHT / 2 - panY;
-            if (markerX >= x && markerX < x + MAP_WIDTH && markerY >= y && markerY < y + MAP_HEIGHT) {
-                display->setColor(WHITE);
-                display->fillCircle(markerX, markerY, 5);
-                display->setColor(BLACK);
-                display->fillCircle(markerX, markerY, 2);
-            }
-        }
+        drawNodes(display, x, y);
+        drawOwnPosition(display, x, y);
         drawStatus(display, x, y);
     }
 
@@ -523,7 +722,10 @@ bool handleInput(const InputEvent &event)
 {
     initialize();
     bool handled = true;
-    if (event.inputEvent == INPUT_BROKER_UP) {
+    if (event.kbchar == 'n' || event.kbchar == 'N') {
+        if (!focusNextNode(event.kbchar == 'n' ? 1 : -1))
+            handled = false;
+    } else if (event.inputEvent == INPUT_BROKER_UP) {
         panY -= PAN_STEP;
         manuallyPanned = true;
     } else if (event.inputEvent == INPUT_BROKER_DOWN) {
@@ -545,6 +747,7 @@ bool handleInput(const InputEvent &event)
         panY = 0;
     } else if (event.kbchar == '`' || event.inputEvent == INPUT_BROKER_CANCEL) {
         manuallyPanned = false;
+        focusedNode = 0;
         panX = 0;
         panY = 0;
         updatePositionFromMeshtastic();
