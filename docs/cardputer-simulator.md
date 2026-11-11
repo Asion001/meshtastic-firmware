@@ -6,12 +6,12 @@ documents the one that works today: the native Linux build (`meshtasticd`) with 
 
 ## Options at a glance
 
-| Option                                         | What it tests                                                               | Display/keyboard                                     | Effort                     | Verdict                         |
-| ---------------------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------- | ------------------------------- |
-| **Native `native-tft` + SDL window** (this PR) | BaseUI screens, menus, mesh logic, sim radio, API (CLI, web client, MCP)    | 240x135 window, arrow keys + Enter                   | Works now                  | **Use this for UI work**        |
-| Native unit tests (`bin/run-tests.sh`)         | Pure logic (tile math, settings parsing, routing, NodeDB)                   | None                                                 | Works now                  | Use for logic you can isolate   |
-| Wokwi (ESP32-S3)                               | The real ESP32 binary, boot, some peripherals                               | ILI9341-class SPI displays; no TCA8418 keyboard, no LoRa cap, no Cardputer board | Custom chips + paid CLI for CI | Not worth it for this device    |
-| Espressif QEMU (ESP32-S3)                      | The real ESP32 binary, boot, crashes, flash/partition layout                | Only the virtual RGB panel (`esp_lcd_qemu_rgb`), not the ST7789 over SPI; no keyboard | Boot/crash checks only | Useful for "does it boot", not UI |
+| Option                                         | What it tests                                                            | Display/keyboard                                                                      | Effort                         | Verdict                           |
+| ---------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- | ------------------------------ | --------------------------------- |
+| **Native `native-tft` + SDL window** (this PR) | BaseUI screens, menus, mesh logic, sim radio, API (CLI, web client, MCP) | 240x135 window, arrow keys + Enter                                                    | Works now                      | **Use this for UI work**          |
+| Native unit tests (`bin/run-tests.sh`)         | Pure logic (tile math, settings parsing, routing, NodeDB)                | None                                                                                  | Works now                      | Use for logic you can isolate     |
+| Wokwi (ESP32-S3)                               | The real ESP32 binary, boot, some peripherals                            | ILI9341-class SPI displays; no TCA8418 keyboard, no LoRa cap, no Cardputer board      | Custom chips + paid CLI for CI | Not worth it for this device      |
+| Espressif QEMU (ESP32-S3)                      | The real ESP32 binary, boot, crashes, flash/partition layout             | Only the virtual RGB panel (`esp_lcd_qemu_rgb`), not the ST7789 over SPI; no keyboard | Boot/crash checks only         | Useful for "does it boot", not UI |
 
 Native is the practical choice because the UI code (`src/graphics/**`) is shared between ESP32 and
 Linux, so the same BaseUI frames, menus and banners render pixel-for-pixel in the window. What it does
