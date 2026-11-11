@@ -64,10 +64,9 @@ void loadSettings()
         record.flags <= static_cast<uint8_t>(NewNodeNotificationMode::Off)) {
         newNodeMode = static_cast<NewNodeNotificationMode>(record.flags);
         LOG_INFO("Cardputer ADV new-node alerts %s", newNodeModeName(newNodeMode));
-    } else if (bytesRead == sizeof(record) && record.magic == SETTINGS_MAGIC &&
-               record.version == LEGACY_SETTINGS_VERSION) {
-        newNodeMode = (record.flags & NEW_NODE_NOTIFICATIONS_ENABLED) ? NewNodeNotificationMode::ToAll
-                                                                     : NewNodeNotificationMode::Off;
+    } else if (bytesRead == sizeof(record) && record.magic == SETTINGS_MAGIC && record.version == LEGACY_SETTINGS_VERSION) {
+        newNodeMode =
+            (record.flags & NEW_NODE_NOTIFICATIONS_ENABLED) ? NewNodeNotificationMode::ToAll : NewNodeNotificationMode::Off;
         LOG_INFO("Migrated Cardputer ADV new-node alerts to %s", newNodeModeName(newNodeMode));
     } else {
         LOG_INFO("Using default Cardputer ADV notification settings");

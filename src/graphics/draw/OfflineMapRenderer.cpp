@@ -14,10 +14,10 @@
 #include "GPSStatus.h"
 #include "NodeDB.h"
 #include "SPILock.h"
+#include "gps/GeoCoord.h"
 #include "graphics/ScreenFonts.h"
 #include "graphics/TFTColorRegions.h"
 #include "graphics/TFTPalette.h"
-#include "gps/GeoCoord.h"
 
 #include <JPEGDEC.h>
 #include <SD.h>
@@ -132,8 +132,8 @@ bool parseNonnegativeInteger(const char *text, long &value, const char **remaind
     return true;
 }
 
-bool parseTilePath(const char *directoryPath, const char *fileName, int &tileZoom, int &tileX, int &tileY,
-                   char *root, size_t rootSize)
+bool parseTilePath(const char *directoryPath, const char *fileName, int &tileZoom, int &tileX, int &tileY, char *root,
+                   size_t rootSize)
 {
     char directory[128];
     if (!directoryPath || strlen(directoryPath) >= sizeof(directory))

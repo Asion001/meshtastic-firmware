@@ -154,8 +154,10 @@ bool mountCardputerSDLockedImpl(bool logCardDetails)
 
     sdCardMounted = true;
     if (logCardDetails) {
-        const char *type =
-            cardType == CARD_MMC ? "MMC" : cardType == CARD_SD ? "SDSC" : cardType == CARD_SDHC ? "SDHC" : "UNKNOWN";
+        const char *type = cardType == CARD_MMC    ? "MMC"
+                           : cardType == CARD_SD   ? "SDSC"
+                           : cardType == CARD_SDHC ? "SDHC"
+                                                   : "UNKNOWN";
         LOG_DEBUG("SD Card Type: %s", type);
         LOG_DEBUG("SD Card Size: %lu MB", static_cast<uint32_t>(SD.cardSize() / (1024 * 1024)));
         LOG_DEBUG("Total space: %lu MB", static_cast<uint32_t>(SD.totalBytes() / (1024 * 1024)));
@@ -774,8 +776,7 @@ bool restoreConfigurationFromSD()
             LOG_INFO("Seeded /meshtastic configuration on SD from internal flash");
         }
     } else {
-        okay = replaceFlashTreeFromSD(SD_PREFS_ROOT, "/prefs") &&
-               replaceFlashTreeFromSD(SD_BACKUPS_ROOT, "/backups");
+        okay = replaceFlashTreeFromSD(SD_PREFS_ROOT, "/prefs") && replaceFlashTreeFromSD(SD_BACKUPS_ROOT, "/backups");
         if (okay)
             LOG_INFO("Restored Meshtastic configuration from SD");
     }

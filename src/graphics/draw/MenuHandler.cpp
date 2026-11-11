@@ -2396,8 +2396,7 @@ void menuHandler::newNodeNotificationsMenu()
              currentMode == cardputerAdv::NewNodeNotificationMode::ToAll ? 'x' : ' ');
     snprintf(onlyThisLabel, sizeof(onlyThisLabel), "[%c] Only this",
              currentMode == cardputerAdv::NewNodeNotificationMode::OnlyThis ? 'x' : ' ');
-    snprintf(offLabel, sizeof(offLabel), "[%c] Off",
-             currentMode == cardputerAdv::NewNodeNotificationMode::Off ? 'x' : ' ');
+    snprintf(offLabel, sizeof(offLabel), "[%c] Off", currentMode == cardputerAdv::NewNodeNotificationMode::Off ? 'x' : ' ');
 
     BannerOverlayOptions bannerOptions;
     bannerOptions.message = "New Node Alerts";

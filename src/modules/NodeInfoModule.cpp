@@ -71,9 +71,9 @@ bool NodeInfoModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, mes
 
 #if defined(M5STACK_CARDPUTER_ADV) && HAS_SCREEN
     const auto newNodeMode = cardputerAdv::newNodeNotificationMode();
-    const bool notifyForPacket = newNodeMode == cardputerAdv::NewNodeNotificationMode::ToAll ||
-                                 (newNodeMode == cardputerAdv::NewNodeNotificationMode::OnlyThis &&
-                                  !isBroadcast(mp.to) && isToUs(&mp));
+    const bool notifyForPacket =
+        newNodeMode == cardputerAdv::NewNodeNotificationMode::ToAll ||
+        (newNodeMode == cardputerAdv::NewNodeNotificationMode::OnlyThis && !isBroadcast(mp.to) && isToUs(&mp));
     if (isNewNode && hasChanged && notifyForPacket && screen) {
         char banner[64];
         const char *nodeName = p.short_name[0] ? p.short_name : p.id;
