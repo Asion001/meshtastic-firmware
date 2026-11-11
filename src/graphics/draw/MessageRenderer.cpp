@@ -3,9 +3,12 @@
 #include "MessageRenderer.h"
 
 // Core includes
+#include "Channels.h"
+#include "MeshService.h"
 #include "MessageStore.h"
 #include "NodeDB.h"
 #include "UIRenderer.h"
+#include "UptimeClock.h"
 #include "gps/RTC.h"
 #include "graphics/EmoteRenderer.h"
 #include "graphics/Screen.h"
@@ -102,6 +105,9 @@ void nudgeScroll(int8_t direction)
 {
     if (direction == 0)
         return;
+#ifdef USE_EINK
+    manualScrolling = true; // or the next e-ink redraw puts the messages back at the top
+#endif
 
     if (cachedHeights.empty()) {
         scrollY = 0.0f;
@@ -436,12 +442,13 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
     display->setFont(FONT_SMALL);
     const bool compactPanel = graphics::isCompactPanel(display);
     // Compact panels: no bottom nav row anymore (see UIRenderer::drawNavigationBar), full height available.
-    const int navHeight = compactPanel ? 0 : FONT_HEIGHT_SMALL;
+    const int navHeight = compactPanel ? 0 : FONT_HEIGHT_SMALL + BASEUI_BELOW_HEADER_MARGIN + BASEUI_HEADER_MARGIN;
     const int scrollBottom = SCREEN_HEIGHT - navHeight;
-    const int contentTop = compactPanel ? 0 : getTextPositions(display)[1];
+    // Rounded screens start the body below the header margin; getTextPositions(display)[1] + BASEUI_BELOW_HEADER_MARGIN
+    const int contentTop = compactPanel ? 0 : navHeight;
     const int usableHeight = compactPanel ? scrollBottom - contentTop : scrollBottom;
-    constexpr int LEFT_MARGIN = 2;
-    constexpr int RIGHT_MARGIN = 2;
+    constexpr int LEFT_MARGIN = 2 + BASEUI_BODY_LR_MARGIN;
+    constexpr int RIGHT_MARGIN = 2 + BASEUI_BODY_LR_MARGIN;
     constexpr int SCROLLBAR_WIDTH = 3;
     constexpr int BUBBLE_PAD_X = 3;
     constexpr int BUBBLE_PAD_Y = 4;
@@ -452,6 +459,8 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
     // Check if bubbles are enabled
     const bool showBubbles = config.display.enable_message_bubbles && !compactPanel;
     const int textIndent = showBubbles ? (BUBBLE_PAD_X + BUBBLE_TEXT_INDENT) : LEFT_MARGIN;
+    // Bubbles carry their own padding, so the rounded-screen inset has to come from here
+    const int contentLeft = x + (showBubbles ? BASEUI_BODY_LR_MARGIN : 0);
 
     // Derived widths
     const int leftTextWidth = SCREEN_WIDTH - LEFT_MARGIN - RIGHT_MARGIN - (showBubbles ? (BUBBLE_PAD_X * 2) : 0);
@@ -571,7 +580,7 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
             }
         } else if (m.timestamp > 0 && nowSecs == 0) {
             // RTC not valid: only trust boot-relative if same boot
-            uint32_t bootNow = millis() / 1000;
+            uint32_t bootNow = Time::getUptimeSecs();
             if (m.isBootRelative && m.timestamp <= bootNow) {
                 seconds = bootNow - m.timestamp;
                 invalidTime = false;
@@ -771,8 +780,9 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
         scrollY = 0;
     }
 #else
-    // E-Ink: disable autoscroll
-    scrollY = 0.0f;
+    // E-Ink: no autoscroll (it would refresh the panel continuously), but keep where UP/DOWN scrolled to
+    if (!manualScrolling)
+        scrollY = 0.0f;
     waitingToReset = false;
     scrollStarted = false;
     lastTime = millis();
@@ -872,10 +882,10 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
             if (b.mine) {
                 bubbleX = rightEdge - bubbleW;
             } else {
-                bubbleX = x;
+                bubbleX = contentLeft;
             }
-            if (bubbleX < x)
-                bubbleX = x;
+            if (bubbleX < contentLeft)
+                bubbleX = contentLeft;
             if (bubbleX + bubbleW > rightEdge)
                 bubbleW = std::max(1, rightEdge - bubbleX);
 
@@ -952,7 +962,7 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
                     if (headerX < LEFT_MARGIN)
                         headerX = LEFT_MARGIN;
                 } else {
-                    headerX = x + textIndent;
+                    headerX = contentLeft + textIndent;
                 }
                 graphics::UIRenderer::drawStringWithEmotes(display, headerX, lineY, cachedLines[i].c_str(), FONT_HEIGHT_SMALL, 1,
                                                            true);
@@ -1001,7 +1011,7 @@ void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
 
                     drawStringWithEmotes(display, rightX, lineY, cachedLines[i], emotes, numEmotes);
                 } else {
-                    drawStringWithEmotes(display, x + textIndent, lineY, cachedLines[i], emotes, numEmotes);
+                    drawStringWithEmotes(display, contentLeft + textIndent, lineY, cachedLines[i], emotes, numEmotes);
                 }
             }
         }
@@ -1128,18 +1138,13 @@ void handleNewMessage(OLEDDisplay *display, const StoredMessage &sm, const mesht
 {
     if (packet.from != 0) {
         hasUnreadMessage = true;
-        const bool suppressBanner = cannedMessageModule && cannedMessageModule->isFreeTextActive();
+        const bool suppressBanner =
+            (cannedMessageModule && cannedMessageModule->isFreeTextActive()) || (screen && screen->isTextMessageFrameShown());
         // Don't let the pop-up clobber a menu/picker the user is interacting with; the wake below
         // still happens so a message can light the screen back up.
         const bool menuShowing = NotificationRenderer::isMenuShowing();
 
-        // Determine if message belongs to a muted channel
-        bool isChannelMuted = false;
-        if (sm.type == MessageType::BROADCAST) {
-            const meshtastic_Channel channel = channels.getByIndex(packet.channel ? packet.channel : channels.getPrimaryIndex());
-            if (channel.settings.has_module_settings && channel.settings.module_settings.is_muted)
-                isChannelMuted = true;
-        }
+        const bool isMuted = isMutedForPacket(packet);
 
         // Banner logic
         const meshtastic_NodeInfoLite *node = nodeDB->getMeshNode(packet.from);
@@ -1159,21 +1164,9 @@ void handleNewMessage(OLEDDisplay *display, const StoredMessage &sm, const mesht
         char truncatedLongName[64];
         graphics::UIRenderer::truncateStringWithEmotes(display, longName, truncatedLongName, sizeof(truncatedLongName),
                                                        availWidth);
-        const char *msgRaw = reinterpret_cast<const char *>(packet.decoded.payload.bytes);
 
         char banner[256];
-        bool isAlert = false;
-
-        // Check if alert detection is enabled via external notification module
-        if (moduleConfig.external_notification.alert_bell || moduleConfig.external_notification.alert_bell_vibra ||
-            moduleConfig.external_notification.alert_bell_buzzer) {
-            for (size_t i = 0; i < packet.decoded.payload.size && i < 100; i++) {
-                if (msgRaw[i] == '\x07') {
-                    isAlert = true;
-                    break;
-                }
-            }
-        }
+        const bool isAlert = MeshService::isAlertPayload(packet);
 
         if (isAlert) {
             if (truncatedLongName[0])
@@ -1181,8 +1174,8 @@ void handleNewMessage(OLEDDisplay *display, const StoredMessage &sm, const mesht
             else
                 strcpy(banner, "Alert Received");
         } else {
-            // Skip muted channels unless it's an alert
-            if (isChannelMuted)
+            // Skip muted channels/senders unless it's an alert
+            if (isMuted)
                 return;
 
             if (truncatedLongName[0]) {
@@ -1226,9 +1219,14 @@ void handleNewMessage(OLEDDisplay *display, const StoredMessage &sm, const mesht
             screen->setOn(true);
         }
 
-        if (!suppressBanner && !menuShowing) {
+        // Don't let the banner interrupt whatever the user is in the middle of -- it would cover an
+        // active module/game, and worse, a transient banner replaces any interactive overlay, so it
+        // would discard a half-entered picker / text entry (e.g. high-score initials). The message
+        // is still stored, its thread still selected below, and the unread indicator set, so nothing
+        // is lost -- the user just sees it once they're done. (isInteractionBusy() subsumes the
+        // modal-module check this guard used to make.)
+        if (!screen->isInteractionBusy() && !menuShowing && !suppressBanner)
             screen->showSimpleBanner(banner, inThread ? 1000 : 3000);
-        }
     }
 
     // Always focus into the correct conversation thread when a message with real text arrives
